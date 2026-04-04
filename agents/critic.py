@@ -17,7 +17,7 @@ from __future__ import annotations
 from agents.base import BaseAgent
 
 _SYSTEM_PROMPT = """\
-You are an answer quality critic for a CPHOS customer service system.
+You are an answer quality critic for a CPHOS (Chinese Physics Olympiad S) customer service system.
 
 You will be given a user question and two candidate answers (A1 and A2).
 Choose the BETTER answer using these rules:

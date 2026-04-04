@@ -11,6 +11,8 @@ Key security behavior:
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import re
 import secrets
@@ -20,7 +22,7 @@ from threading import Lock
 from typing import Literal, Protocol, TypedDict
 
 
-SID_RE = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
+SID_RE = re.compile(r"^[A-Za-z0-9_.-]{16,128}$")
 
 
 class Turn(TypedDict):
@@ -39,7 +41,7 @@ class Session:
 @dataclass
 class SessionResolution:
     session: Session
-    state: Literal["created", "reused", "reissued"]
+    state: Literal["created", "reused", "reissued", "recovered"]
 
 
 class SessionStoreProtocol(Protocol):
@@ -60,9 +62,33 @@ class SessionStoreProtocol(Protocol):
         ...
 
 
-def generate_session_id() -> str:
-    """Generate a high-entropy server-side session ID."""
-    return secrets.token_urlsafe(24)
+def generate_session_id(secret: str | None = None) -> str:
+    """Generate a high-entropy server-side session ID, optionally HMAC-signed.
+
+    When *secret* is provided the ID is ``{payload}.{tag}`` where the tag
+    lets the server recognise its own IDs after a restart without needing
+    the session to still exist in the store.
+    """
+    payload = secrets.token_urlsafe(24)
+    if secret:
+        tag = hmac.new(
+            secret.encode(), payload.encode(), hashlib.sha256,
+        ).hexdigest()[:16]
+        return f"{payload}.{tag}"
+    return payload
+
+
+def verify_session_signature(session_id: str, secret: str) -> bool:
+    """Return True when *session_id* carries a valid HMAC tag issued by *secret*."""
+    if "." not in session_id:
+        return False
+    payload, tag = session_id.rsplit(".", 1)
+    if not payload or not tag:
+        return False
+    expected = hmac.new(
+        secret.encode(), payload.encode(), hashlib.sha256,
+    ).hexdigest()[:16]
+    return hmac.compare_digest(tag, expected)
 
 
 def is_valid_session_id(session_id: str | None) -> bool:
@@ -74,36 +100,52 @@ def is_valid_session_id(session_id: str | None) -> bool:
 class InMemorySessionStore:
     """Thread-safe in-memory session store with idle-TTL eviction."""
 
-    def __init__(self, ttl_seconds: int = 1800, max_history: int = 20) -> None:
+    def __init__(self, ttl_seconds: int = 1800, max_history: int = 20, *, secret: str | None = None) -> None:
         self._sessions: dict[str, Session] = {}
         self._lock = Lock()
         self.ttl = ttl_seconds
         self.max_history = max_history
+        self._secret = secret
 
     def resolve(self, session_id: str | None) -> SessionResolution:
         """Resolve incoming session id to an active session.
 
-        Reuse when valid+exists, otherwise create/reissue a new server ID.
+        Resolution priority:
+        1. Valid format + found in store → **reuse** (touch last_active).
+        2. Valid format + HMAC-signed by us + NOT in store → **recover**
+           (recreate empty session under the *same* ID so the cookie is stable
+           across TTL evictions / server restarts).
+        3. Otherwise → **create** a fresh server-issued signed ID.
+           If the client supplied an ID that failed verification it is logged
+           as **reissued** so operators can spot forged/corrupted cookies.
         """
         with self._lock:
             self._evict_expired()
 
+            # 1) Known session → reuse
             if is_valid_session_id(session_id) and session_id in self._sessions:
                 session = self._sessions[session_id]
                 session.last_active = time.monotonic()
                 return SessionResolution(session=session, state="reused")
 
-            if session_id:
-                # Client supplied an unknown/invalid id: reissue for safety.
-                new_id = generate_session_id()
-                session = Session(session_id=new_id)
-                self._sessions[new_id] = session
-                return SessionResolution(session=session, state="reissued")
+            # 2) Signed by us but evicted / lost → recover with same ID
+            if (
+                is_valid_session_id(session_id)
+                and self._secret
+                and verify_session_signature(session_id, self._secret)
+            ):
+                session = Session(session_id=session_id)
+                self._sessions[session_id] = session
+                return SessionResolution(session=session, state="recovered")
 
-            new_id = generate_session_id()
+            # 3) Missing / forged / unsigned → issue a fresh signed ID
+            new_id = generate_session_id(self._secret)
             session = Session(session_id=new_id)
             self._sessions[new_id] = session
-            return SessionResolution(session=session, state="created")
+            return SessionResolution(
+                session=session,
+                state="reissued" if session_id else "created",
+            )
 
     def add_turn(self, session_id: str, question: str, answer: str) -> None:
         with self._lock:
@@ -139,7 +181,7 @@ class InMemorySessionStore:
 class RedisSessionStore:
     """Redis-backed session store for multi-worker deployments."""
 
-    def __init__(self, redis_url: str, ttl_seconds: int = 1800, max_history: int = 20) -> None:
+    def __init__(self, redis_url: str, ttl_seconds: int = 1800, max_history: int = 20, *, secret: str | None = None) -> None:
         try:
             import redis
         except Exception as exc:
@@ -148,6 +190,7 @@ class RedisSessionStore:
         self._redis = redis.Redis.from_url(redis_url, decode_responses=True)
         self.ttl = ttl_seconds
         self.max_history = max_history
+        self._secret = secret
 
     def _key(self, session_id: str) -> str:
         return f"session:{session_id}"
@@ -170,7 +213,24 @@ class RedisSessionStore:
                     state="reused",
                 )
 
-        new_id = generate_session_id()
+            # Signed by us but expired in Redis → recover
+            if self._secret and verify_session_signature(session_id, self._secret):
+                key = self._key(session_id)
+                self._redis.hset(
+                    key,
+                    mapping={
+                        "created_at": str(now),
+                        "last_active": str(now),
+                        "history": "[]",
+                    },
+                )
+                self._redis.expire(key, self.ttl)
+                return SessionResolution(
+                    session=Session(session_id=session_id, created_at=now, last_active=now, history=[]),
+                    state="recovered",
+                )
+
+        new_id = generate_session_id(self._secret)
         key = self._key(new_id)
         self._redis.hset(
             key,
@@ -220,7 +280,14 @@ class RedisSessionStore:
         return sum(1 for _ in self._redis.scan_iter(match="session:*", count=1000))
 
 
-def create_session_store(*, backend: str, ttl_seconds: int, max_history: int, redis_url: str | None) -> SessionStoreProtocol:
+def create_session_store(
+    *,
+    backend: str,
+    ttl_seconds: int,
+    max_history: int,
+    redis_url: str | None,
+    secret: str | None = None,
+) -> SessionStoreProtocol:
     """Factory for session store backend selection.
 
     Args:
@@ -228,9 +295,10 @@ def create_session_store(*, backend: str, ttl_seconds: int, max_history: int, re
         ttl_seconds: session idle TTL
         max_history: max turns per session
         redis_url: required when backend == "redis"
+        secret: HMAC secret for signing session IDs
     """
     if backend == "redis":
         if not redis_url:
             raise RuntimeError("SESSION_BACKEND=redis requires REDIS_URL")
-        return RedisSessionStore(redis_url=redis_url, ttl_seconds=ttl_seconds, max_history=max_history)
-    return InMemorySessionStore(ttl_seconds=ttl_seconds, max_history=max_history)
+        return RedisSessionStore(redis_url=redis_url, ttl_seconds=ttl_seconds, max_history=max_history, secret=secret)
+    return InMemorySessionStore(ttl_seconds=ttl_seconds, max_history=max_history, secret=secret)

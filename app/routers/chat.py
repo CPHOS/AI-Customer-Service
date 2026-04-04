@@ -1,7 +1,8 @@
 """
 Chat router.
 
-POST /chat — submit a question and receive an answer.
+POST /chat        — submit a question and receive a JSON answer.
+POST /chat/stream — submit a question and receive a streamed SSE answer.
 
 Features
 --------
@@ -17,16 +18,18 @@ Features
   the existing task instead of starting a redundant pipeline run.
 """
 import asyncio
+import json
 import time
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi.responses import StreamingResponse
 
 from app.deps import get_pipeline, get_session_store
 from app.limiter import limiter
 from app.schemas.chat import ChatRequest, ChatResponse
 from app.sessions import SessionStoreProtocol
 from pipeline import Pipeline
-from utils.logger import get_logger
+from utils.logger import get_logger, request_log_context
 
 router = APIRouter(tags=["chat"])
 logger = get_logger(__name__)
@@ -97,10 +100,17 @@ async def chat(
             session.session_id,
             req.source,
         )
+    elif resolved.state == "recovered":
+        logger.info(
+            "Session recovered (not in store, signature valid) sid=%r source=%r",
+            session.session_id,
+            req.source,
+        )
 
     # Use session ID as the stable user identity so all turns are grouped
     user_id = session.session_id
     client_ip = _extract_client_ip(request)
+    req_id = getattr(request.state, "request_id", "")
 
     # ── Deduplicate in-flight requests for the same session ──────────────────
     sid = session.session_id
@@ -125,13 +135,15 @@ async def chat(
         # survives handler cancellation (client disconnect on refresh).
         async def _run_pipeline() -> tuple[str, float]:
             t0 = time.monotonic()
-            ans: str = await asyncio.to_thread(
-                pipeline.answer,
-                req.question,
-                user_id=user_id,
-                source=req.source,
-                client_ip=client_ip,
-            )
+            def _call():
+                with request_log_context(req_id):
+                    return pipeline.answer(
+                        req.question,
+                        user_id=user_id,
+                        source=req.source,
+                        client_ip=client_ip,
+                    )
+            ans: str = await asyncio.to_thread(_call)
             lat = round(time.monotonic() - t0, 3)
             sessions.add_turn(sid, req.question, ans)
             return ans, lat
@@ -180,3 +192,138 @@ async def reset_chat_session(request: Request, response: Response) -> dict[str, 
         path=settings.session_cookie_path,
     )
     return {"status": "ok"}
+
+
+# ── Streaming SSE endpoint ────────────────────────────────────────────────────
+
+def _resolve_session(request: Request, req: ChatRequest, sessions: SessionStoreProtocol):
+    """Shared session resolution logic used by both /chat and /chat/stream."""
+    settings = request.app.state.settings
+    cookie_sid = request.cookies.get(settings.session_cookie_name)
+    body_sid = req.session_id if settings.session_accept_body_id else None
+    incoming_sid = cookie_sid or body_sid
+    resolved = sessions.resolve(incoming_sid)
+    session = resolved.session
+
+    if resolved.state == "created":
+        logger.info("Session created sid=%r source=%r", session.session_id, req.source)
+    elif resolved.state == "reissued":
+        logger.warning(
+            "Session reissued old_sid=%r new_sid=%r source=%r",
+            incoming_sid, session.session_id, req.source,
+        )
+    elif resolved.state == "recovered":
+        logger.info(
+            "Session recovered (not in store, signature valid) sid=%r source=%r",
+            session.session_id, req.source,
+        )
+    return session
+
+
+def _set_session_cookie(response: Response, session_id: str, settings) -> None:
+    """Apply the session cookie to *response*."""
+    response.set_cookie(
+        key=settings.session_cookie_name,
+        value=session_id,
+        max_age=settings.session_ttl,
+        httponly=True,
+        secure=settings.session_cookie_secure,
+        samesite=settings.session_cookie_samesite,
+        domain=settings.session_cookie_domain,
+        path=settings.session_cookie_path,
+    )
+
+
+@router.post("/chat/stream")
+@limiter.limit("30/minute")
+async def chat_stream(
+    request:  Request,
+    req:      ChatRequest,
+    pipeline: Pipeline             = Depends(get_pipeline),
+    sessions: SessionStoreProtocol = Depends(get_session_store),
+):
+    """Stream the AI answer via Server-Sent Events (SSE).
+
+    Event types sent to the client::
+
+        event: status
+        data: {"step":"classifying","message":"正在分析问题…"}
+
+        event: token
+        data: {"text":"您好"}
+
+        event: done
+        data: {"session_id":"...","latency_s":1.23}
+
+        event: error
+        data: {"detail":"..."}
+    """
+    if pipeline is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="The pipeline is not ready yet. Please retry shortly.",
+        )
+
+    settings = request.app.state.settings
+    session = _resolve_session(request, req, sessions)
+    user_id = session.session_id
+    client_ip = _extract_client_ip(request)
+    sid = session.session_id
+    req_id = getattr(request.state, "request_id", "")
+
+    async def event_generator():
+        loop = asyncio.get_running_loop()
+        q: asyncio.Queue = asyncio.Queue()
+
+        def _run():
+            try:
+                with request_log_context(req_id):
+                    for ev_type, ev_data in pipeline.answer_stream(
+                        req.question,
+                        user_id=user_id,
+                        source=req.source,
+                        client_ip=client_ip,
+                    ):
+                        asyncio.run_coroutine_threadsafe(q.put((ev_type, ev_data)), loop)
+            except Exception as exc:
+                logger.exception("Pipeline stream error for session %s", sid)
+                asyncio.run_coroutine_threadsafe(
+                    q.put(("error", {"detail": str(exc)})), loop,
+                )
+            finally:
+                asyncio.run_coroutine_threadsafe(q.put(None), loop)
+
+        loop.run_in_executor(None, _run)
+
+        t0 = time.monotonic()
+        full_parts: list[str] = []
+
+        while True:
+            item = await q.get()
+            if item is None:
+                break
+            ev_type, ev_data = item
+            if ev_type == "token":
+                full_parts.append(ev_data.get("text", ""))
+            yield f"event: {ev_type}\ndata: {json.dumps(ev_data, ensure_ascii=False)}\n\n"
+
+        full_answer = "".join(full_parts)
+        latency = round(time.monotonic() - t0, 3)
+        sessions.add_turn(sid, req.question, full_answer)
+        done_data = {
+            "session_id": sid if settings.session_return_body_id else "",
+            "latency_s": latency,
+        }
+        yield f"event: done\ndata: {json.dumps(done_data, ensure_ascii=False)}\n\n"
+
+    sse = StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",   # disable nginx buffering
+        },
+    )
+    _set_session_cookie(sse, sid, settings)
+    return sse

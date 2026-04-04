@@ -22,7 +22,7 @@ from __future__ import annotations
 from agents.base import BaseAgent
 
 _SYSTEM_PROMPT = """\
-You are a routing assistant for CPHOS (Chinese Physics Olympiad Simulation System) \
+You are a routing assistant for CPHOS (Chinese Physics Olympiad S) \
 customer service.
 
 Classify the user's question into EXACTLY ONE of these categories:

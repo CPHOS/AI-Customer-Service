@@ -27,7 +27,9 @@ from app.limiter import limiter
 from app.middleware.request_id import RequestIDMiddleware
 from app.routers import chat, health
 from app.sessions import create_session_store
+from utils.logger import get_logger
 
+_logger = get_logger(__name__)
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _STATIC_DIR   = str(_PROJECT_ROOT / "static")
 
@@ -87,7 +89,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ttl_seconds = settings.session_ttl,
         max_history = settings.session_max_history,
         redis_url   = settings.redis_url,
+        secret      = settings.session_secret,
     )
+    if not os.environ.get("SESSION_SECRET"):
+        _logger.warning(
+            "SESSION_SECRET not set — auto-generated for this process.  "
+            "Set it in the environment for stable session IDs across restarts.",
+        )
     app.state.limiter = limiter             # required by SlowAPIMiddleware
 
     # ── Middleware (registered in reverse order — last added runs first) ───────

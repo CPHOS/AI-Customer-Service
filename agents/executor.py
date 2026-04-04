@@ -12,8 +12,7 @@ from __future__ import annotations
 from agents.base import BaseAgent
 
 _SYSTEM_PROMPT = """\
-You are an AI customer service assistant for CPHOS (中国物理奥林匹克模拟系统 / \
-Chinese Physics Olympiad Simulation System).
+You are an AI customer service assistant for CPHOS (Chinese Physics Olympiad S).
 
 ## About CPHOS
 CPHOS is an online platform for organizing simulated Physics Olympiad competitions \

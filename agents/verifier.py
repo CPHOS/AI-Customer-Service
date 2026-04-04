@@ -107,7 +107,17 @@ class VerifierAgent(BaseAgent):
 
     def summarize(self, question: str, answer: str) -> str:
         """Polish a validated answer into the final user-facing reply."""
-        messages = [
+        messages = self._summarize_messages(question, answer)
+        return self.ask_llm(messages, temperature=0.5)
+
+    def summarize_stream(self, question: str, answer: str):
+        """Streaming variant of :meth:`summarize` — yields content chunks."""
+        messages = self._summarize_messages(question, answer)
+        yield from self.ask_llm_stream(messages, temperature=0.5)
+
+    @staticmethod
+    def _summarize_messages(question: str, answer: str) -> list[dict[str, str]]:
+        return [
             {"role": "system", "content": _SUMMARIZE_SYSTEM},
             {
                 "role": "user",
@@ -118,4 +128,3 @@ class VerifierAgent(BaseAgent):
                 ),
             },
         ]
-        return self.ask_llm(messages, temperature=0.5)

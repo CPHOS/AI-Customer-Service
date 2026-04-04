@@ -176,6 +176,25 @@ function removeTyping() {
   document.getElementById('typing-indicator')?.remove();
 }
 
+function createStreamingBubble() {
+  // Create an empty bot message bubble for progressive token fill.
+  const wrapper = document.createElement('div');
+  wrapper.className = 'flex items-start gap-2 msg-enter';
+  wrapper.innerHTML = `
+    <div class="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-base flex-shrink-0">🤖</div>
+    <div class="max-w-[78%]">
+      <div class="streaming-status text-xs text-blue-500 mb-1 ml-1 italic"></div>
+      <div class="bubble bg-slate-100 text-slate-800 rounded-2xl rounded-tl-sm px-4 py-2.5 text-sm leading-relaxed"></div>
+      <p class="latency-text text-xs text-slate-400 mt-1 ml-1"></p>
+    </div>`;
+  chatContainer.appendChild(wrapper);
+  chatContainer.scrollTop = chatContainer.scrollHeight;
+  const statusEl  = wrapper.querySelector('.streaming-status');
+  const bubble    = wrapper.querySelector('.bubble');
+  const latencyEl = wrapper.querySelector('.latency-text');
+  return { wrapper, statusEl, bubble, latencyEl };
+}
+
 // ── localStorage helpers ──────────────────────────────────────────────────────
 function loadHistory() {
   try { return JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]'); }
@@ -210,11 +229,11 @@ function discardPending() {
   persistHistory(history);
 }
 
-// ── Network ───────────────────────────────────────────────────────────────────
+// ── Network (SSE streaming) ───────────────────────────────────────────────────
 async function doSend(question) {
   abortController = new AbortController();
   try {
-    const res = await fetch('chat', {
+    const res = await fetch('chat/stream', {
       method:  'POST',
       credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
@@ -228,19 +247,64 @@ async function doSend(question) {
       const err = await res.json().catch(() => ({ detail: res.statusText }));
       discardPending();
       appendMessage('bot', `❌ 请求失败（${res.status}）：${err.detail ?? '未知错误'}`);
-    } else {
-      const data = await res.json();
-      commitTurn(data.answer, data.latency_s);
-      appendMessage('bot', data.answer, data.latency_s);
+      return;
     }
+
+    // Create a live bubble for streaming tokens
+    const { statusEl, bubble, latencyEl } = createStreamingBubble();
+    let fullText = '';
+    let latency  = 0;
+
+    const reader  = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer    = '';
+    let curEvent  = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      // Parse SSE: lines separated by \n
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        if (line.startsWith('event: ')) {
+          curEvent = line.slice(7).trim();
+        } else if (line.startsWith('data: ')) {
+          const raw = line.slice(6);
+          try {
+            const data = JSON.parse(raw);
+            if (curEvent === 'token') {
+              fullText += data.text || '';
+              bubble.innerHTML = escapeHtml(fullText);
+              chatContainer.scrollTop = chatContainer.scrollHeight;
+            } else if (curEvent === 'status') {
+              statusEl.textContent = data.message || '';
+            } else if (curEvent === 'done') {
+              latency = data.latency_s || 0;
+            } else if (curEvent === 'error') {
+              fullText += `\n❌ ${data.detail || '未知错误'}`;
+              bubble.innerHTML = escapeHtml(fullText);
+            }
+          } catch { /* malformed JSON line, skip */ }
+          curEvent = '';
+        }
+      }
+    }
+
+    // Clean up status & show latency
+    statusEl.remove();
+    if (latency > 0) latencyEl.textContent = `耗时 ${latency}s`;
+    commitTurn(fullText, latency);
+
   } catch (err) {
     removeTyping();
     if (err.name === 'AbortError') {
-      // User explicitly clicked stop — discard pending so it won't re-send on reload
       discardPending();
       appendMessage('bot', '⏹️ 已停止回复');
     } else {
-      // Network error — keep pending for retry on reload
       appendMessage('bot', `❌ 网络错误：${err.message}`);
     }
   } finally {

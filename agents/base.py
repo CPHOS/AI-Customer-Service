@@ -7,6 +7,7 @@ openai Python library. No third-party routing or agent frameworks are used.
 from __future__ import annotations
 import re
 import time
+from typing import Generator
 
 import openai
 
@@ -91,6 +92,79 @@ class BaseAgent:
             f"LLM call failed after {self._max_attempts} attempts. "
             f"Last error: {last_exc}"
         )
+
+    def ask_llm_stream(
+        self,
+        messages: list[dict[str, str]],
+        temperature: float = 0.7,
+        max_tokens: int = 2048,
+    ) -> Generator[str, None, None]:
+        """Yield content chunks from a streaming chat-completion request.
+
+        Retries the full request on transient errors.  ``<think>…</think>``
+        blocks are silently discarded (same semantics as ``ask_llm``).
+        """
+        last_exc: Exception | None = None
+        for attempt in range(self._max_attempts):
+            try:
+                stream = self._client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    stream=True,
+                )
+                yield from self._filter_think_stream(stream)
+                return
+            except openai.RateLimitError as exc:
+                last_exc = exc
+                logger.warning(
+                    "%s stream rate-limited (attempt %d/%d). Sleeping %.0fs…",
+                    self.__class__.__name__, attempt + 1, self._max_attempts, self._retry_sleep,
+                )
+                time.sleep(self._retry_sleep)
+            except openai.APIStatusError as exc:
+                last_exc = exc
+                logger.warning(
+                    "%s stream API error %s (attempt %d/%d): %s",
+                    self.__class__.__name__, exc.status_code, attempt + 1, self._max_attempts, exc.message,
+                )
+                time.sleep(self._retry_sleep)
+            except Exception as exc:
+                last_exc = exc
+                logger.warning(
+                    "%s stream unexpected error (attempt %d/%d): %s",
+                    self.__class__.__name__, attempt + 1, self._max_attempts, exc,
+                )
+                time.sleep(self._retry_sleep)
+        raise RuntimeError(
+            f"LLM stream failed after {self._max_attempts} attempts. "
+            f"Last error: {last_exc}"
+        )
+
+    @staticmethod
+    def _filter_think_stream(stream) -> Generator[str, None, None]:
+        """Yield content deltas, silently dropping ``<think>…</think>`` regions."""
+        in_think = False
+        for chunk in stream:
+            delta = chunk.choices[0].delta if chunk.choices else None
+            text = delta.content if delta else None
+            if not text:
+                continue
+            if in_think:
+                if "</think>" in text:
+                    in_think = False
+                    rest = text.split("</think>", 1)[1]
+                    if rest:
+                        yield rest
+                continue
+            if "<think>" in text:
+                in_think = True
+                before = text.split("<think>", 1)[0]
+                if before:
+                    yield before
+                continue
+            yield text
 
     # ── Response extraction ────────────────────────────────────────────────────
 

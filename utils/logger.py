@@ -49,6 +49,7 @@ Three components:
 """
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import sys
@@ -58,8 +59,27 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
-_FMT      = "%(asctime)s  %(levelname)-8s  [%(name)s]  %(message)s"
+# ── Request-ID correlation ────────────────────────────────────────────────────
+# Populated by the ``request_log_context`` context-manager (called from the
+# chat router) so that every log line emitted during a request carries the
+# ``X-Request-ID`` for easy correlation in aggregated log stores.
+_request_id_var: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "request_id", default="",
+)
+
+
+class _RequestIDFilter(logging.Filter):
+    """Inject ``%(request_id)s`` into every log record."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.request_id = _request_id_var.get("")  # type: ignore[attr-defined]
+        return True
+
+
+_FMT      = "%(asctime)s  %(levelname)-8s  [%(name)s]  %(request_id)s  %(message)s"
 _DATE_FMT = "%Y-%m-%d %H:%M:%S"
+
+_request_id_filter = _RequestIDFilter()
 
 _console_handler = logging.StreamHandler(sys.stderr)
 _console_handler.setFormatter(logging.Formatter(_FMT, datefmt=_DATE_FMT))
@@ -105,11 +125,28 @@ def get_logger(name: str) -> logging.Logger:
     """
     logger = logging.getLogger(name)
     if not logger.handlers:
+        logger.addFilter(_request_id_filter)
         logger.addHandler(_console_handler)
         logger.addHandler(_routing_handler)
         logger.setLevel(logging.DEBUG)   # logger passes everything; handlers filter
         logger.propagate = False
     return logger
+
+
+@contextmanager
+def request_log_context(request_id: str) -> Iterator[None]:
+    """Set the X-Request-ID for all log records emitted within this context.
+
+    Usage (in an async route handler or middleware)::
+
+        with request_log_context(request.state.request_id):
+            ...  # all log lines include the request_id
+    """
+    token = _request_id_var.set(request_id)
+    try:
+        yield
+    finally:
+        _request_id_var.reset(token)
 
 
 def dbg(label: str, text: str) -> None:
