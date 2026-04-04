@@ -101,6 +101,7 @@ class Pipeline:
         question:  str,
         user_id:   str = "anonymous",
         source:    str = "cli",
+        client_ip: str = "unknown",
     ) -> str:
         """Process *question* and return the final reply string.
 
@@ -112,6 +113,7 @@ class Pipeline:
                       WeCom userid (e.g. ``"张老师"`` / ``"zhanglaoshi"``).
             source:   Channel tag recorded in the conversation log.
                       Suggested values: ``"cli"`` / ``"wechat"`` / ``"wecom"``
+            client_ip: Client IP address for audit and troubleshooting logs.
 
         Debug output is controlled globally via ``config.DEBUG_MODE``
         (set ``DEBUG_MODE=true`` in .env or pass ``--debug`` on the CLI).
@@ -123,13 +125,14 @@ class Pipeline:
             if self.conv_logger else nullcontext()
         )
         with _ctx:
-            return self._answer_inner(question, user_id, source, _t0)
+            return self._answer_inner(question, user_id, source, client_ip, _t0)
 
     def _answer_inner(
         self,
         question: str,
         user_id:  str,
         source:   str,
+        client_ip: str,
         _t0:      float,
     ) -> str:
         """Inner implementation of answer(), always runs inside session_log_context."""
@@ -141,10 +144,10 @@ class Pipeline:
             """Record the turn and return the reply."""
             latency = time.monotonic() - _t0
             logger.info(
-                "━━ Turn ━━ user=%r source=%r category=%r latency=%.2fs\n"
+                "━━ Turn ━━ user=%r source=%r ip=%r category=%r latency=%.2fs\n"
                 "  Q: %s\n"
                 "  A: %s",
-                user_id, source, category, latency,
+                user_id, source, client_ip, category, latency,
                 question,
                 reply,
             )
@@ -156,11 +159,12 @@ class Pipeline:
                     source=source,
                     category=category,
                     latency_s=latency,
+                    client_ip=client_ip,
                 )
             return reply
 
         # ── Step 1: Classify → topic category ────────────────────────────────
-        logger.info("━━ Question ━━ user=%r  %s", user_id, question)
+        logger.info("━━ Question ━━ user=%r ip=%r  %s", user_id, client_ip, question)
         category = self.classifier.classify(question)
         dbg("Classifier output", f"category={category!r}")
 

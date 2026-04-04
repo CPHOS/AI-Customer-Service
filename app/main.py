@@ -26,7 +26,7 @@ from app.config import Settings
 from app.limiter import limiter
 from app.middleware.request_id import RequestIDMiddleware
 from app.routers import chat, health
-from app.sessions import SessionStore
+from app.sessions import create_session_store
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _STATIC_DIR   = str(_PROJECT_ROOT / "static")
@@ -82,9 +82,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # ── Shared state (available to all routes via request.app.state) ──────────
     app.state.settings      = settings
     app.state.pipeline      = None          # replaced by lifespan
-    app.state.session_store = SessionStore(
+    app.state.session_store = create_session_store(
+        backend     = settings.session_backend,
         ttl_seconds = settings.session_ttl,
         max_history = settings.session_max_history,
+        redis_url   = settings.redis_url,
     )
     app.state.limiter = limiter             # required by SlowAPIMiddleware
 
@@ -92,7 +94,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins     = settings.cors_origins_list,
-        allow_credentials = False,
+        allow_credentials = settings.cors_allow_credentials,
         allow_methods     = ["GET", "POST"],
         allow_headers     = ["*"],
     )

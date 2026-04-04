@@ -19,8 +19,8 @@ class ChatRequest(BaseModel):
             default=None,
             max_length=64,
             description=(
-                "会话 ID。首次请求留空，服务端会生成并在响应中返回。"
-                "后续请求传入该值以延续同一会话。"
+                "会话 ID（兼容字段，迁移期可选）。"
+                "服务端优先使用 HttpOnly Cookie；该字段后续将下线。"
             ),
         ),
     ] = None
@@ -33,7 +33,7 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     answer:     str
-    session_id: str   = Field(description="会话 ID，客户端应持久化并在后续请求中回传")
+    session_id: str   = Field(description="会话 ID（兼容字段，后续将废弃；以 Cookie 为准）")
     latency_s:  float = Field(description="服务端处理耗时（秒）")
 
 

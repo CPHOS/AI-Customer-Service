@@ -26,7 +26,11 @@ class BaseAgent:
     _RETRY_SLEEP  = 5.0
 
     def __init__(self, model: str, api_key: str, base_url: str | None = None) -> None:
-        self._client = openai.OpenAI(api_key=api_key, base_url=base_url)
+        self._client = openai.OpenAI(
+            api_key=api_key,
+            base_url=base_url,
+            timeout=openai.Timeout(connect=10.0, read=60.0, write=10.0, pool=5.0),
+        )
         self.model   = model
 
     def ask_llm(

@@ -91,7 +91,6 @@
 
 <script>
 // ── Constants ─────────────────────────────────────────────────────────────────
-const SESSION_KEY = 'cphos_session_id';
 const HISTORY_KEY = 'cphos_history';
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
@@ -102,7 +101,6 @@ const statusText    = document.getElementById('status-text');
 
 // ── Mutable state ─────────────────────────────────────────────────────────────
 let isWaiting = false;
-let sessionId = null;
 
 // ── UI helpers ────────────────────────────────────────────────────────────────
 function escapeHtml(text) {
@@ -192,8 +190,9 @@ async function doSend(question) {
   try {
     const res = await fetch('/chat', {
       method:  'POST',
+      credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ question, session_id: sessionId, source: 'web' }),
+      body:    JSON.stringify({ question, source: 'web' }),
     });
 
     removeTyping();
@@ -204,10 +203,6 @@ async function doSend(question) {
       appendMessage('bot', `❌ 请求失败（${res.status}）：${err.detail ?? '未知错误'}`);
     } else {
       const data = await res.json();
-      if (data.session_id) {
-        sessionId = data.session_id;
-        localStorage.setItem(SESSION_KEY, sessionId);
-      }
       commitTurn(data.answer, data.latency_s);
       appendMessage('bot', data.answer, data.latency_s);
     }
@@ -223,30 +218,10 @@ async function doSend(question) {
   }
 }
 
-// ── Session ID ───────────────────────────────────────────────────────────────
-// Generate a UUID v4 client-side so session_id is in localStorage BEFORE the
-// first request goes out.  This way a refresh-while-waiting still sends the
-// same session_id and continues the same log file.
-function newUUID() {
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
-    const r = Math.random() * 16 | 0;
-    return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
-  });
-}
-
-function ensureSessionId() {
-  if (!sessionId) {
-    sessionId = newUUID();
-    localStorage.setItem(SESSION_KEY, sessionId);
-  }
-}
-
 // ── Send message ──────────────────────────────────────────────────────────────
 function sendMessage() {
   const question = input.value.trim();
   if (!question || isWaiting) return;
-
-  ensureSessionId();   // persist session_id NOW, before the response comes back
 
   isWaiting        = true;
   sendBtn.disabled = true;
@@ -280,9 +255,6 @@ async function checkHealth() {
 
 // ── Init (runs after all functions are defined) ───────────────────────────────
 function init() {
-  // Restore session ID
-  sessionId = localStorage.getItem(SESSION_KEY) || null;
-
   // Restore chat history; detect any pending (in-flight) question
   const history = loadHistory();
   let pendingQuestion = null;
@@ -306,11 +278,14 @@ function init() {
   }
 
   // Clear history button
-  document.getElementById('clear-btn').addEventListener('click', () => {
+  document.getElementById('clear-btn').addEventListener('click', async () => {
     if (isWaiting) return;
+    try {
+      await fetch('/chat/reset', { method: 'POST', credentials: 'include' });
+    } catch {
+      // Ignore network failures; still clear local UI history.
+    }
     localStorage.removeItem(HISTORY_KEY);
-    localStorage.removeItem(SESSION_KEY);
-    sessionId = null;
     // Remove all messages except the static welcome bubble
     const msgs = chatContainer.querySelectorAll('.msg-enter:not(:first-child)');
     msgs.forEach(el => el.remove());

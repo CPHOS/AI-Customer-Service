@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from fastapi import Request
 
-from app.sessions import SessionStore
+from app.sessions import SessionStoreProtocol
 from pipeline import Pipeline
 
 
@@ -17,6 +17,6 @@ def get_pipeline(request: Request) -> Pipeline:
     return request.app.state.pipeline
 
 
-def get_session_store(request: Request) -> SessionStore:
+def get_session_store(request: Request) -> SessionStoreProtocol:
     """Yield the global SessionStore instance stored on app state."""
     return request.app.state.session_store
