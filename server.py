@@ -39,4 +39,3 @@ if __name__ == "__main__":
         reload                    = _settings.reload,
         timeout_graceful_shutdown = _settings.shutdown_timeout,
     )
-

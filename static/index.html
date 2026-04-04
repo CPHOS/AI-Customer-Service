@@ -80,8 +80,12 @@
           class="flex-shrink-0 w-10 h-10 rounded-xl bg-blue-500 hover:bg-blue-600 disabled:bg-slate-300 disabled:cursor-not-allowed text-white flex items-center justify-center transition-colors"
           disabled>
           <!-- Send icon -->
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="w-5 h-5 rotate-90">
+          <svg id="send-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="w-5 h-5 rotate-90">
             <path d="M3.478 2.405a.75.75 0 00-.926.94l2.432 7.905H13.5a.75.75 0 010 1.5H4.984l-2.432 7.905a.75.75 0 00.926.94 60.519 60.519 0 0018.445-8.986.75.75 0 000-1.218A60.517 60.517 0 003.478 2.405z" />
+          </svg>
+          <!-- Stop icon (hidden while not waiting) -->
+          <svg id="stop-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="w-5 h-5 hidden">
+            <rect x="6" y="6" width="12" height="12" rx="2" />
           </svg>
         </button>
       </div>
@@ -101,6 +105,27 @@ const statusText    = document.getElementById('status-text');
 
 // ── Mutable state ─────────────────────────────────────────────────────────────
 let isWaiting = false;
+let abortController = null;
+
+// ── Button mode switching ─────────────────────────────────────────────────────
+function setStopMode(active) {
+  const sendIcon = document.getElementById('send-icon');
+  const stopIcon = document.getElementById('stop-icon');
+  if (active) {
+    // Switch to red stop button
+    sendBtn.disabled = false;
+    sendBtn.classList.remove('bg-blue-500', 'hover:bg-blue-600', 'disabled:bg-slate-300', 'disabled:cursor-not-allowed');
+    sendBtn.classList.add('bg-red-500', 'hover:bg-red-600');
+    sendIcon.classList.add('hidden');
+    stopIcon.classList.remove('hidden');
+  } else {
+    // Switch back to blue send button
+    sendBtn.classList.remove('bg-red-500', 'hover:bg-red-600');
+    sendBtn.classList.add('bg-blue-500', 'hover:bg-blue-600', 'disabled:bg-slate-300', 'disabled:cursor-not-allowed');
+    stopIcon.classList.add('hidden');
+    sendIcon.classList.remove('hidden');
+  }
+}
 
 // ── UI helpers ────────────────────────────────────────────────────────────────
 function escapeHtml(text) {
@@ -187,12 +212,14 @@ function discardPending() {
 
 // ── Network ───────────────────────────────────────────────────────────────────
 async function doSend(question) {
+  abortController = new AbortController();
   try {
-    const res = await fetch('/chat', {
+    const res = await fetch('chat', {
       method:  'POST',
       credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify({ question, source: 'web' }),
+      signal:  abortController.signal,
     });
 
     removeTyping();
@@ -208,11 +235,18 @@ async function doSend(question) {
     }
   } catch (err) {
     removeTyping();
-    // Do NOT call discardPending() here — a network error or page-refresh abort
-    // should leave the pending entry intact so it is retried on the next page load.
-    appendMessage('bot', `❌ 网络错误：${err.message}`);
+    if (err.name === 'AbortError') {
+      // User explicitly clicked stop — discard pending so it won't re-send on reload
+      discardPending();
+      appendMessage('bot', '⏹️ 已停止回复');
+    } else {
+      // Network error — keep pending for retry on reload
+      appendMessage('bot', `❌ 网络错误：${err.message}`);
+    }
   } finally {
+    abortController = null;
     isWaiting        = false;
+    setStopMode(false);
     sendBtn.disabled = input.value.trim() === '';
     input.focus();
   }
@@ -224,9 +258,9 @@ function sendMessage() {
   if (!question || isWaiting) return;
 
   isWaiting        = true;
-  sendBtn.disabled = true;
   input.value      = '';
   input.style.height = 'auto';
+  setStopMode(true);
 
   markPending(question);
   appendMessage('user', question);
@@ -237,7 +271,7 @@ function sendMessage() {
 // ── Health check ──────────────────────────────────────────────────────────────
 async function checkHealth() {
   try {
-    const res  = await fetch('/health');
+    const res  = await fetch('health');
     const data = await res.json();
     if (data.pipeline === 'ready') {
       statusText.textContent = '在线';
@@ -272,8 +306,8 @@ function init() {
   if (pendingQuestion) {
     appendMessage('user', pendingQuestion);
     appendTyping();
-    isWaiting        = true;
-    sendBtn.disabled = true;
+    isWaiting = true;
+    setStopMode(true);
     doSend(pendingQuestion);
   }
 
@@ -281,7 +315,7 @@ function init() {
   document.getElementById('clear-btn').addEventListener('click', async () => {
     if (isWaiting) return;
     try {
-      await fetch('/chat/reset', { method: 'POST', credentials: 'include' });
+      await fetch('chat/reset', { method: 'POST', credentials: 'include' });
     } catch {
       // Ignore network failures; still clear local UI history.
     }
@@ -295,15 +329,25 @@ function init() {
   input.addEventListener('input', () => {
     input.style.height = 'auto';
     input.style.height = Math.min(input.scrollHeight, 128) + 'px';
-    sendBtn.disabled = input.value.trim() === '' || isWaiting;
+    if (!isWaiting) sendBtn.disabled = input.value.trim() === '';
   });
   input.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && isWaiting && abortController) {
+      abortController.abort();
+      return;
+    }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      if (!sendBtn.disabled) sendMessage();
+      if (!isWaiting && input.value.trim()) sendMessage();
     }
   });
-  sendBtn.addEventListener('click', sendMessage);
+  sendBtn.addEventListener('click', () => {
+    if (isWaiting && abortController) {
+      abortController.abort();
+    } else {
+      sendMessage();
+    }
+  });
 
   checkHealth();
 }

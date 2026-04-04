@@ -31,6 +31,10 @@ DEBUG_MODE: bool = os.environ.get("DEBUG_MODE", "false").lower() == "true"
 # ── Pipeline settings ─────────────────────────────────────────────────────────
 MAX_RETRIES: int = int(os.environ.get("OPENROUTER_MAX_RETRIES", "3"))
 
+# ── LLM call retry settings (per individual API call in BaseAgent) ────────────
+LLM_MAX_ATTEMPTS: int   = int(os.environ.get("LLM_MAX_ATTEMPTS", "5"))
+LLM_RETRY_SLEEP:  float = float(os.environ.get("LLM_RETRY_SLEEP", "2.0"))
+
 # When True, run two retrieval paths (section-hinted + general) in parallel and
 # use the Critic to select the better answer before the Verifier validates it.
 # Set to "false" to disable and use the simpler single-path flow.

@@ -79,23 +79,53 @@ def build_pipeline(
         index_mtime = _index_path.stat().st_mtime
         return any(f.stat().st_mtime > index_mtime for f in _ref_files if f.exists())
 
+    _need_rebuild = False
+    _index_loaded = False
+
     if _index_path and _index_path.exists() and not (check_refs and _index_stale()):
         logger.info("Loading index from %r…", load_index)
         retriever.load(load_index)
         logger.info("Loaded %d chunks from index.", len(retriever._chunks))
+        _index_loaded = True
 
-    elif refs_dir or doc_paths:
-        if _index_path:
+        # Verify embedding dimension matches current model
+        if retriever._embeddings is not None and retriever._embeddings.shape[0] > 0:
+            try:
+                probe = retriever._embed(["dimension check"], batch_size=1)
+                model_dim = probe.shape[1]
+                index_dim = retriever._embeddings.shape[1]
+                if model_dim != index_dim:
+                    logger.warning(
+                        "Embedding dimension mismatch: index has %d, model produces %d. "
+                        "Auto-rebuilding index from references…",
+                        index_dim, model_dim,
+                    )
+                    _need_rebuild = True
+                    # Reset the retriever state
+                    retriever._chunks = []
+                    retriever._sections = []
+                    retriever._embeddings = None
+            except Exception as exc:
+                logger.warning("Dimension probe failed (%s). Will rebuild index.", exc)
+                _need_rebuild = True
+                retriever._chunks = []
+                retriever._sections = []
+                retriever._embeddings = None
+
+    if _need_rebuild or (not _index_loaded and (refs_dir or doc_paths)):
+        if _need_rebuild:
+            save_index = save_index or load_index
+        elif _index_path:
             if not _index_path.exists():
-                print(
-                    f"[INFO] Index file {load_index!r} not found — building from {refs_dir!r}…",
-                    file=sys.stderr,
+                logger.warning(
+                    "Index file %r not found — building from %r…",
+                    load_index, refs_dir,
                 )
             else:
                 stale = [f.name for f in _ref_files if f.exists() and f.stat().st_mtime > _index_path.stat().st_mtime]
-                print(
-                    f"[INFO] References changed ({', '.join(stale)}) — rebuilding index…",
-                    file=sys.stderr,
+                logger.warning(
+                    "References changed (%s) — rebuilding index…",
+                    ', '.join(stale),
                 )
             # auto-save back to the same path so next run loads fast
             save_index = save_index or load_index
@@ -136,17 +166,18 @@ def build_pipeline(
             retriever.save(save_index)
             logger.info("Index saved to %r.", save_index)
 
-    else:
+    elif not _index_loaded:
         logger.warning(
             "No documents loaded. The assistant will have no knowledge base.\n"
             "          Use --docs or --refs-dir to load knowledge-base files."
         )
 
+    _llm_kw = dict(max_attempts=config.LLM_MAX_ATTEMPTS, retry_sleep=config.LLM_RETRY_SLEEP)
     return Pipeline(
-        classifier   = ClassifierAgent(config.CLASSIFIER_MODEL, config.OPENAI_API_KEY, config.LLM_BASE_URL),
-        executor     = ExecutorAgent  (config.EXECUTOR_MODEL,   config.OPENAI_API_KEY, config.LLM_BASE_URL),
-        verifier     = VerifierAgent  (config.VERIFIER_MODEL,   config.OPENAI_API_KEY, config.LLM_BASE_URL),
-        critic       = CriticAgent    (config.CRITIC_MODEL,     config.OPENAI_API_KEY, config.LLM_BASE_URL),
+        classifier   = ClassifierAgent(config.CLASSIFIER_MODEL, config.OPENAI_API_KEY, config.LLM_BASE_URL, **_llm_kw),
+        executor     = ExecutorAgent  (config.EXECUTOR_MODEL,   config.OPENAI_API_KEY, config.LLM_BASE_URL, **_llm_kw),
+        verifier     = VerifierAgent  (config.VERIFIER_MODEL,   config.OPENAI_API_KEY, config.LLM_BASE_URL, **_llm_kw),
+        critic       = CriticAgent    (config.CRITIC_MODEL,     config.OPENAI_API_KEY, config.LLM_BASE_URL, **_llm_kw),
         retriever    = retriever,
         top_k        = top_k        if top_k        is not None else config.TOP_K_CHUNKS,
         max_retries  = max_retries  if max_retries  is not None else config.MAX_RETRIES,

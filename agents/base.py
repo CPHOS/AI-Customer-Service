@@ -5,7 +5,7 @@ All LLM calls route through this class exclusively via the official
 openai Python library. No third-party routing or agent frameworks are used.
 """
 from __future__ import annotations
-
+import re
 import time
 
 import openai
@@ -22,16 +22,26 @@ class BaseAgent:
         - openai  (official OpenAI Python SDK)
     """
 
-    _MAX_ATTEMPTS = 20
-    _RETRY_SLEEP  = 5.0
+    _DEFAULT_MAX_ATTEMPTS = 5
+    _DEFAULT_RETRY_SLEEP  = 2.0
 
-    def __init__(self, model: str, api_key: str, base_url: str | None = None) -> None:
+    def __init__(
+        self,
+        model: str,
+        api_key: str,
+        base_url: str | None = None,
+        *,
+        max_attempts: int | None = None,
+        retry_sleep: float | None = None,
+    ) -> None:
         self._client = openai.OpenAI(
             api_key=api_key,
             base_url=base_url,
             timeout=openai.Timeout(connect=10.0, read=60.0, write=10.0, pool=5.0),
         )
         self.model   = model
+        self._max_attempts = max_attempts if max_attempts is not None else self._DEFAULT_MAX_ATTEMPTS
+        self._retry_sleep  = retry_sleep if retry_sleep is not None else self._DEFAULT_RETRY_SLEEP
 
     def ask_llm(
         self,
@@ -45,7 +55,7 @@ class BaseAgent:
         network, server errors) with a fixed sleep between attempts.
         """
         last_exc: Exception | None = None
-        for attempt in range(self._MAX_ATTEMPTS):
+        for attempt in range(self._max_attempts):
             try:
                 response = self._client.chat.completions.create(
                     model=self.model,
@@ -53,30 +63,62 @@ class BaseAgent:
                     temperature=temperature,
                     max_tokens=max_tokens,
                 )
-                return response.choices[0].message.content.strip()
+                content = self._extract_content(response)
+                return content
             except openai.RateLimitError as exc:
                 last_exc = exc
                 logger.warning(
                     "%s rate-limited (attempt %d/%d). Sleeping %.0fs…",
-                    self.__class__.__name__, attempt + 1, self._MAX_ATTEMPTS, self._RETRY_SLEEP,
+                    self.__class__.__name__, attempt + 1, self._max_attempts, self._retry_sleep,
                 )
-                time.sleep(self._RETRY_SLEEP)
+                time.sleep(self._retry_sleep)
             except openai.APIStatusError as exc:
                 last_exc = exc
                 logger.warning(
                     "%s API error %s (attempt %d/%d): %s",
-                    self.__class__.__name__, exc.status_code, attempt + 1, self._MAX_ATTEMPTS, exc.message,
+                    self.__class__.__name__, exc.status_code, attempt + 1, self._max_attempts, exc.message,
                 )
-                time.sleep(self._RETRY_SLEEP)
+                time.sleep(self._retry_sleep)
             except Exception as exc:
                 last_exc = exc
                 logger.warning(
                     "%s unexpected error (attempt %d/%d): %s",
-                    self.__class__.__name__, attempt + 1, self._MAX_ATTEMPTS, exc,
+                    self.__class__.__name__, attempt + 1, self._max_attempts, exc,
                 )
-                time.sleep(self._RETRY_SLEEP)
+                time.sleep(self._retry_sleep)
 
         raise RuntimeError(
-            f"LLM call failed after {self._MAX_ATTEMPTS} attempts. "
+            f"LLM call failed after {self._max_attempts} attempts. "
             f"Last error: {last_exc}"
         )
+
+    # ── Response extraction ────────────────────────────────────────────────────
+
+    _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+
+    @classmethod
+    def _extract_content(cls, response) -> str:
+        """Extract usable text from a chat-completion response.
+
+        Handles reasoning / thinking models that may place output in extra
+        fields (e.g. OpenRouter ``reasoning``) or wrap chain-of-thought in
+        ``<think>…</think>`` tags inside the content field.
+        """
+        msg = response.choices[0].message
+        content = msg.content
+
+        # Fallback: reasoning models may return content=None with a separate field
+        if content is None:
+            extra = getattr(msg, "model_extra", None) or {}
+            content = extra.get("reasoning") or extra.get("reasoning_content")
+
+        if content is None:
+            raise ValueError("LLM returned empty content (None)")
+
+        # Strip <think>…</think> blocks emitted by some reasoning models
+        content = cls._THINK_RE.sub("", content).strip()
+
+        if not content:
+            raise ValueError("LLM returned empty content after stripping think blocks")
+
+        return content

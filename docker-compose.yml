@@ -1,0 +1,19 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cphos-app
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8000:8000"
+    env_file:
+      - .env
+    environment:
+      SESSION_BACKEND: memory
+      SESSION_COOKIE_PATH: /cphos-ai/
+      RELOAD: "false"
+      HOST: 0.0.0.0
+      PORT: "8000"
+    volumes:
+      - ./logs:/app/logs

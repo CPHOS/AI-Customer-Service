@@ -12,6 +12,9 @@ Features
 * X-Request-ID propagation from RequestIDMiddleware for log correlation.
 * Pipeline runs in a thread-pool worker so the async event-loop is never
   blocked by the synchronous LLM/embedding calls.
+* In-flight request deduplication: if the same session already has a
+  pipeline call running (e.g. browser refreshed), the new handler joins
+  the existing task instead of starting a redundant pipeline run.
 """
 import asyncio
 import time
@@ -27,6 +30,11 @@ from utils.logger import get_logger
 
 router = APIRouter(tags=["chat"])
 logger = get_logger(__name__)
+
+# In-flight request tracker: session_id → asyncio.Task[(answer, latency)]
+# Used to deduplicate concurrent requests for the same session (e.g. page
+# refresh while waiting for a response).
+_inflight: dict[str, asyncio.Task] = {}
 
 
 def _extract_client_ip(request: Request) -> str:
@@ -94,19 +102,50 @@ async def chat(
     user_id = session.session_id
     client_ip = _extract_client_ip(request)
 
-    # ── Call pipeline in thread (synchronous, may block for several seconds) ──
-    t0 = time.monotonic()
-    answer: str = await asyncio.to_thread(
-        pipeline.answer,
-        req.question,
-        user_id = user_id,
-        source  = req.source,
-        client_ip = client_ip,
-    )
-    latency = round(time.monotonic() - t0, 3)
+    # ── Deduplicate in-flight requests for the same session ──────────────────
+    sid = session.session_id
+    existing_task = _inflight.get(sid)
 
-    # ── Persist turn to session history ───────────────────────────────────────
-    sessions.add_turn(session.session_id, req.question, answer)
+    if existing_task is not None and not existing_task.done():
+        # Another handler is already running the pipeline for this session
+        # (e.g. the browser refreshed while waiting). Join it instead of
+        # starting a redundant pipeline run.
+        logger.info("Dedup: joining in-flight pipeline task for session %s", sid)
+        try:
+            answer, latency = await asyncio.shield(existing_task)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="In-flight request failed. Please try again.",
+            )
+    else:
+        # No in-flight request — start the pipeline in a background task so it
+        # survives handler cancellation (client disconnect on refresh).
+        async def _run_pipeline() -> tuple[str, float]:
+            t0 = time.monotonic()
+            ans: str = await asyncio.to_thread(
+                pipeline.answer,
+                req.question,
+                user_id=user_id,
+                source=req.source,
+                client_ip=client_ip,
+            )
+            lat = round(time.monotonic() - t0, 3)
+            sessions.add_turn(sid, req.question, ans)
+            return ans, lat
+
+        task = asyncio.create_task(_run_pipeline())
+        _inflight[sid] = task
+        task.add_done_callback(lambda _: _inflight.pop(sid, None))
+
+        try:
+            answer, latency = await asyncio.shield(task)
+        except asyncio.CancelledError:
+            # Handler cancelled (client disconnected) but the task keeps running
+            # so a subsequent request from the same session can still join it.
+            raise
 
     # ── Cookie issue / refresh ───────────────────────────────────────────────
     response.set_cookie(
