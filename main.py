@@ -43,8 +43,7 @@ def build_pipeline(
     refs_dir:         str | None = None,
     load_index:       str | None = None,
     save_index:       str | None = None,
-    conv_log_path:    str = "conversations.jsonl",
-    log_file:         str | None = None,
+    conv_log_path:    str = "logs",
     verbose:          bool = False,
     check_refs:       bool = False,
     top_k:            int | None = None,
@@ -152,18 +151,17 @@ def build_pipeline(
         top_k        = top_k        if top_k        is not None else config.TOP_K_CHUNKS,
         max_retries  = max_retries  if max_retries  is not None else config.MAX_RETRIES,
         enable_dual_path = enable_dual_path if enable_dual_path is not None else config.ENABLE_DUAL_PATH,
-        conv_logger  = ConversationLogger(conv_log_path, verbose=verbose, log_file=log_file),
+        conv_logger  = ConversationLogger(conv_log_path, verbose=verbose),
     )
 
 
 def run_interactive(
     pipeline: Pipeline,
-    debug:    bool = False,
     user_id:  str  = "anonymous",
     source:   str  = "cli",
 ) -> None:
     """Simple read-eval-print loop."""
-    mode_hint = "  \033[33m[debug mode ON]\033[0m" if debug else ""
+    mode_hint = "  \033[33m[debug mode ON]\033[0m" if config.DEBUG_MODE else ""
     user_hint = f"  \033[36m[user: {user_id}]\033[0m" if user_id != "anonymous" else ""
     print(f"\nCPHOS AI Customer Service  (type 'exit' or Ctrl-C to quit){mode_hint}{user_hint}\n")
     while True:
@@ -179,7 +177,7 @@ def run_interactive(
             print("Goodbye.")
             break
 
-        reply = pipeline.answer(question, debug=debug, user_id=user_id, source=source)
+        reply = pipeline.answer(question, user_id=user_id, source=source)
         print(f"\nAI: {reply}\n")
 
 
@@ -236,9 +234,9 @@ def parse_args(args=None):
     parser.add_argument(
         "-c", "--conv-log",
         type=str,
-        metavar="FILE",
-        default="logs/conversations.jsonl",
-        help="Path to the append-only JSONL conversation log file.",
+        metavar="DIR",
+        default="logs",
+        help="Directory where per-session .jsonl and .log files are written.",
     )
     parser.add_argument(
         "-k", "--top-k",
@@ -271,13 +269,6 @@ def parse_args(args=None):
         help="Print INFO-level pipeline logs to stderr (classified category, latency, etc.).",
     )
     parser.add_argument(
-        "--log-file",
-        type=str,
-        metavar="FILE",
-        default=None,
-        help="Path to the pipeline log file. Defaults to <conv-log>.log (e.g. conversations.log).",
-    )
-    parser.add_argument(
         "--check-refs",
         action="store_true",
         default=False,
@@ -289,20 +280,22 @@ def parse_args(args=None):
 def main() -> None:
     args = parse_args()
 
+    if args.debug:
+        config.DEBUG_MODE = True
+
     pipeline = build_pipeline(
         doc_paths     = args.docs,
         refs_dir      = args.refs_dir,
         load_index    = args.load_index,
         save_index    = args.save_index,
         conv_log_path = args.conv_log,
-        log_file      = args.log_file,
         verbose       = args.verbose,
         check_refs    = args.check_refs,
         top_k         = args.top_k,
         max_retries   = args.max_retries,
         enable_dual_path = not args.no_dual_path,
     )
-    run_interactive(pipeline, debug=args.debug, user_id=args.user, source="cli")
+    run_interactive(pipeline, user_id=args.user, source="cli")
 
 
 if __name__ == "__main__":

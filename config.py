@@ -23,6 +23,11 @@ EMBEDDING_MODEL:  str = os.environ.get("OPENROUTER_EMBEDDING_MODEL",  "openai/te
 CHUNK_WORD_LENGTH: int = int(os.environ.get("OPENROUTER_CHUNK_WORD_LENGTH", "150"))
 TOP_K_CHUNKS:      int = int(os.environ.get("OPENROUTER_TOP_K_CHUNKS",      "5"))
 
+# ── Debug mode ───────────────────────────────────────────────────────────────
+# When True, each agent's full input/output is printed to stderr every turn.
+# Set via CLI flag (--debug) or environment variable: DEBUG_MODE=true
+DEBUG_MODE: bool = os.environ.get("DEBUG_MODE", "false").lower() == "true"
+
 # ── Pipeline settings ─────────────────────────────────────────────────────────
 MAX_RETRIES: int = int(os.environ.get("OPENROUTER_MAX_RETRIES", "3"))
 

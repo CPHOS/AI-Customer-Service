@@ -1,58 +1,62 @@
 """
 Structured logging utility.
 
-Two components:
+Three components:
 
 1. ``get_logger(name)``
-   Standard Python logger that writes INFO/WARNING/ERROR lines to stderr.
-   Import via::
+   Standard Python logger that writes INFO/WARNING/ERROR lines to stderr
+   and, if a session log context is active, to the current session's .log
+   file as well.  Import via::
 
        from utils.logger import get_logger
        logger = get_logger(__name__)
 
-2. ``ConversationLogger``
-   Append-only JSONL conversation recorder.  Every completed Q&A turn is
-   written as one JSON line to a file (default: ``conversations.jsonl``).
+2. ``dbg(label, text)``
+   Centralised debug printer.  Reads ``config.DEBUG_MODE``; no-op when False.
+   Import via::
 
-   Schema per record::
+       from utils.logger import dbg
+       dbg("Classifier output", f"category={category!r}")
+
+3. ``ConversationLogger``
+   Per-session conversation recorder.  Every completed Q&A turn is written
+   as two files under *logs_dir*:
+
+   * ``<session_id>.jsonl`` -- one JSON line per turn (structured, for analysis)
+   * ``<session_id>.log``   -- full pipeline log for this session: every
+                              INFO/WARNING/ERROR emitted during ``answer()``
+                              (classify, retrieve, verify, turn summary, etc.),
+                              written in the same timestamp+level format as the
+                              console logger.
+
+   ``session_log_context(user_id)`` is a context manager that must be entered
+   around each ``pipeline.answer()`` call.  It routes all Python logger output
+   from the current thread to that session's ``.log`` file.  Multiple
+   concurrent sessions in different threads each get their own file with no
+   interleaving.
+
+   Schema per JSONL record::
 
        {
-         "ts":         "2026-04-03T11:10:03",   # ISO-8601 UTC timestamp
-         "user_id":    "张老师",                 # arbitrary user identifier
-         "source":     "cli",                   # channel: "cli" / "wechat" /
-                                                #   "wecom" (企业微信) / etc.
-         "category":   "B",                     # classifier topic letter
-         "question":   "怎么添加学生信息？",
-         "reply":      "请在小程序中点击…",
-         "latency_s":  2.34                     # wall-clock seconds for answer()
+         "ts":         "2026-04-03T11:10:03",
+         "user_id":    "abc-123",
+         "source":     "api",
+         "category":   "B",
+         "question":   "...",
+         "reply":      "...",
+         "latency_s":  2.34
        }
-
-   Usage::
-
-       from utils.logger import ConversationLogger
-       conv_log = ConversationLogger()           # uses default path
-       conv_log.record(
-           user_id="张老师",
-           source="cli",
-           category="B",
-           question="怎么添加学生信息？",
-           reply="请在小程序中…",
-           latency_s=2.34,
-       )
-
-   Designed for future WeChat / 企业微信 (WeCom) integration: pass the
-   WeChat nickname or WeCom user-id string as ``user_id`` and set
-   ``source="wechat"`` or ``source="wecom"``.
 """
 from __future__ import annotations
 
 import json
 import logging
-import os
 import sys
+import threading
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 _FMT      = "%(asctime)s  %(levelname)-8s  [%(name)s]  %(message)s"
 _DATE_FMT = "%Y-%m-%d %H:%M:%S"
@@ -61,12 +65,40 @@ _console_handler = logging.StreamHandler(sys.stderr)
 _console_handler.setFormatter(logging.Formatter(_FMT, datefmt=_DATE_FMT))
 _console_handler.setLevel(logging.WARNING)   # silent by default
 
-# Set by ConversationLogger.__init__; None until then.
-_file_handler: logging.FileHandler | None = None
+
+class _ThreadRoutingHandler(logging.Handler):
+    """Routes log records to a per-thread FileHandler.
+
+    A single module-level instance is attached to every logger.  Callers
+    register a FileHandler for the current thread; records emitted on that
+    thread are forwarded to the registered handler.  Records on unregistered
+    threads are silently dropped (they still reach the console handler).
+    """
+
+    def __init__(self) -> None:
+        super().__init__(level=logging.DEBUG)
+        self._handlers: dict[int, logging.FileHandler] = {}
+        self._lock = threading.Lock()
+
+    def register(self, thread_id: int, handler: logging.FileHandler) -> None:
+        with self._lock:
+            self._handlers[thread_id] = handler
+
+    def unregister(self, thread_id: int) -> None:
+        with self._lock:
+            self._handlers.pop(thread_id, None)
+
+    def emit(self, record: logging.LogRecord) -> None:
+        handler = self._handlers.get(threading.current_thread().ident)
+        if handler:
+            handler.emit(record)
+
+
+_routing_handler = _ThreadRoutingHandler()
 
 
 def get_logger(name: str) -> logging.Logger:
-    """Return a named logger backed by the shared console (and file) handler(s).
+    """Return a named logger backed by the shared console and routing handlers.
 
     Calling this multiple times with the same *name* returns the same logger
     without adding duplicate handlers.
@@ -74,68 +106,100 @@ def get_logger(name: str) -> logging.Logger:
     logger = logging.getLogger(name)
     if not logger.handlers:
         logger.addHandler(_console_handler)
-        if _file_handler is not None:
-            logger.addHandler(_file_handler)
+        logger.addHandler(_routing_handler)
         logger.setLevel(logging.DEBUG)   # logger passes everything; handlers filter
         logger.propagate = False
     return logger
 
 
-class ConversationLogger:
-    """Append-only JSONL conversation recorder.
+def dbg(label: str, text: str) -> None:
+    """Print a debug block to stderr (and active session log) when ``config.DEBUG_MODE`` is True.
 
-    Each call to ``record()`` appends one JSON line to *path*.  The file is
-    opened and closed per write so no data is lost if the process crashes.
+    This is the single, centralised debug printer used across the whole
+    codebase.  Import once and call anywhere::
+
+        from utils.logger import dbg
+        dbg("Classifier output", f"category={category!r}")
+
+    Output is gated by ``config.DEBUG_MODE`` so no call-site ``if debug:``
+    guards are needed.
+    """
+    import config  # local import avoids circular dependency at module load time
+    if not config.DEBUG_MODE:
+        return
+    _dbg_logger = logging.getLogger("debug")
+    if not _dbg_logger.handlers:
+        _dbg_logger.addHandler(_console_handler)
+        _dbg_logger.addHandler(_routing_handler)
+        _dbg_logger.setLevel(logging.DEBUG)
+        _dbg_logger.propagate = False
+    border = "─" * 60
+    _dbg_logger.debug("%s\n[DEBUG] %s\n%s\n%s", border, label, text, border)
+
+
+class ConversationLogger:
+    """Per-session conversation recorder.
+
+    For every completed Q&A turn, two files are written under *logs_dir*:
+
+    * ``<session_id>.jsonl`` -- structured JSON line (for analysis / replay)
+    * ``<session_id>.log``   -- full pipeline log: all INFO/WARNING/ERROR records
+                               emitted during the ``answer()`` call (classify,
+                               retrieve, verify steps plus the turn summary),
+                               in the same timestamp+level format as the console.
+
+    Use ``session_log_context(user_id)`` to activate per-thread routing of
+    Python logger output to the session's .log file.
 
     Args:
-        path: Path to the JSONL file.  Created (with parent dirs) if absent.
+        logs_dir: Directory where per-session files are created.
+                  Created (with parents) if absent.
+        verbose:  When True, elevate console handler to INFO level.
     """
 
     def __init__(
         self,
-        path:     str | Path = "logs/conversations.jsonl",
+        logs_dir: str | Path = "logs",
         verbose:  bool = False,
-        log_file: str | Path | None = None,
     ) -> None:
-        global _file_handler
+        self._sessions_dir = Path(logs_dir)
+        self._sessions_dir.mkdir(parents=True, exist_ok=True)
 
-        self._path = Path(path)
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-
-        # ── console handler: INFO when verbose, otherwise silent ──────────────
+        # -- console handler: INFO when verbose, otherwise silent
         _console_handler.setLevel(logging.INFO if verbose else logging.WARNING)
 
-        # ── file handler: always INFO+ regardless of verbose ──────────────────
-        # Single process (e.g. WeCom server): one shared log file is fine —
-        # Python's FileHandler uses a lock, so threads never interleave lines.
-        # Multi-process (e.g. stress_test): append PID to avoid cross-process
-        # corruption.  We detect this by checking whether we were spawned by
-        # another Python process that is also running main.py.
-        if log_file:
-            _log_path = Path(log_file)
-        else:
-            parent_pid = os.getppid()
-            is_subprocess = parent_pid != os.getpid() and Path(f"/proc/{parent_pid}").exists() if sys.platform == "linux" else False
-            # Simpler cross-platform heuristic: if stdin is not a tty we are
-            # likely a subprocess (stress_test pipes stdin).
-            is_subprocess = not sys.stdin.isatty()
-            if is_subprocess:
-                _log_path = self._path.parent / f"{self._path.stem}_{os.getpid()}.log"
-            else:
-                _log_path = self._path.with_suffix(".log")
-        _log_path.parent.mkdir(parents=True, exist_ok=True)
-        _file_handler = logging.FileHandler(_log_path, encoding="utf-8")
-        _file_handler.setFormatter(logging.Formatter(_FMT, datefmt=_DATE_FMT))
-        _file_handler.setLevel(logging.INFO)
-
-        # Back-fill: attach the file handler to loggers already created before
-        # ConversationLogger was instantiated (module-level get_logger() calls).
-        for existing in logging.Logger.manager.loggerDict.values():
-            if isinstance(existing, logging.Logger) and _console_handler in existing.handlers:
-                if _file_handler not in existing.handlers:
-                    existing.addHandler(_file_handler)
-
         self._sys_logger = get_logger(__name__)
+
+    @staticmethod
+    def _safe_id(user_id: str) -> str:
+        """Sanitise *user_id* to a safe filename stem."""
+        return (
+            "".join(c if c.isalnum() or c in "-_" else "_" for c in str(user_id))[:128]
+            or "anonymous"
+        )
+
+    @contextmanager
+    def session_log_context(self, user_id: str) -> Iterator[None]:
+        """Context manager: route all pipeline log records to this session's .log file.
+
+        Wrap each ``pipeline.answer()`` call with this so that INFO/WARNING/ERROR
+        records (classify, retrieve, verify, turn summary ...) are written to
+        ``<logs_dir>/<session_id>.log`` in addition to stderr.
+
+        Thread-safe: concurrent sessions each route to their own file.
+        """
+        safe_id  = self._safe_id(user_id)
+        log_file = self._sessions_dir / f"{safe_id}.log"
+        handler  = logging.FileHandler(log_file, encoding="utf-8")
+        handler.setFormatter(logging.Formatter(_FMT, datefmt=_DATE_FMT))
+        handler.setLevel(logging.DEBUG)
+        thread_id = threading.current_thread().ident
+        _routing_handler.register(thread_id, handler)
+        try:
+            yield
+        finally:
+            _routing_handler.unregister(thread_id)
+            handler.close()
 
     def record(
         self,
@@ -148,23 +212,25 @@ class ConversationLogger:
         latency_s: float = 0.0,
         **extra: Any,
     ) -> None:
-        """Write one conversation turn to the JSONL file.
+        """Write one conversation turn to the per-session JSONL file.
+
+        The .log file is written automatically by the Python logger via
+        ``session_log_context``; this method only writes the structured
+        JSONL record.
 
         Args:
             question:  The user's question text.
             reply:     The final AI reply sent to the user.
-            user_id:   User identifier.  For CLI sessions this is the value
-                       passed via ``--user``.  For WeChat / WeCom integrations
-                       pass the nickname or WeCom userid here.
-            source:    Channel name.  Suggested values:
-                       ``"cli"`` / ``"wechat"`` / ``"wecom"`` / ``"api"``
-            category:  The topic letter from the Classifier (A–G).
+            user_id:   Session / user identifier (used as the filename stem).
+            source:    Channel name: ``"cli"`` / ``"api"`` / ``"wechat"`` / etc.
+            category:  Topic letter from the Classifier (A-G).
             latency_s: Wall-clock seconds from question received to reply sent.
-            **extra:   Any additional key-value pairs to include in the record
-                       (e.g. ``wechat_room="CPHOS技术组工作群"``).
+            **extra:   Additional key-value pairs included in the JSONL record.
         """
-        record: dict[str, Any] = {
-            "ts":        datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S"),
+        ts_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+
+        rec: dict[str, Any] = {
+            "ts":        ts_iso,
             "user_id":   user_id,
             "source":    source,
             "category":  category,
@@ -172,11 +238,12 @@ class ConversationLogger:
             "reply":     reply,
             "latency_s": round(latency_s, 3),
         }
-        record.update(extra)
+        rec.update(extra)
 
+        safe_id    = self._safe_id(user_id)
+        jsonl_file = self._sessions_dir / f"{safe_id}.jsonl"
         try:
-            with self._path.open("a", encoding="utf-8") as fh:
-                fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+            with jsonl_file.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
         except OSError as exc:
-            self._sys_logger.error("ConversationLogger: failed to write record: %s", exc)
-
+            self._sys_logger.error("ConversationLogger: failed to write .jsonl: %s", exc)

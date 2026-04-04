@@ -29,13 +29,14 @@ from __future__ import annotations
 
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 
 from agents.classifier import ClassifierAgent
 from agents.critic     import CriticAgent
 from agents.executor   import ExecutorAgent
 from agents.verifier   import VerifierAgent
 from rag.retriever     import Retriever
-from utils.logger      import ConversationLogger, get_logger
+from utils.logger      import ConversationLogger, dbg, get_logger
 
 logger = get_logger(__name__)
 
@@ -98,7 +99,6 @@ class Pipeline:
     def answer(
         self,
         question:  str,
-        debug:     bool = False,
         user_id:   str = "anonymous",
         source:    str = "cli",
     ) -> str:
@@ -106,21 +106,33 @@ class Pipeline:
 
         Args:
             question: The user's question.
-            debug:    When True, print each agent's input/output to stderr.
             user_id:  Caller identity string logged with every turn.
                       For CLI sessions this comes from ``--user``.
                       For WeChat / WeCom integrations pass the nickname or
                       WeCom userid (e.g. ``"张老师"`` / ``"zhanglaoshi"``).
             source:   Channel tag recorded in the conversation log.
                       Suggested values: ``"cli"`` / ``"wechat"`` / ``"wecom"``
+
+        Debug output is controlled globally via ``config.DEBUG_MODE``
+        (set ``DEBUG_MODE=true`` in .env or pass ``--debug`` on the CLI).
         """
         _t0 = time.monotonic()
 
-        def dbg(label: str, text: str) -> None:
-            if debug:
-                border = "─" * 60
-                logger.debug("%s\n[DEBUG] %s\n%s\n%s", border, label, text, border)
+        _ctx = (
+            self.conv_logger.session_log_context(user_id)
+            if self.conv_logger else nullcontext()
+        )
+        with _ctx:
+            return self._answer_inner(question, user_id, source, _t0)
 
+    def _answer_inner(
+        self,
+        question: str,
+        user_id:  str,
+        source:   str,
+        _t0:      float,
+    ) -> str:
+        """Inner implementation of answer(), always runs inside session_log_context."""
         def fmt(text: str) -> str:
             """Strip Markdown bold markers (**) from the reply before sending."""
             return text.replace("**", "")
@@ -163,6 +175,8 @@ class Pipeline:
         chunks_primary = self.retriever.query(
             question, top_k=self.top_k, section_hint=section_hint
         )
+        # print(f"Retrieved {len(chunks_primary)} chunk(s) with section hint {section_hint!r}.")
+        # print("Chunks:\n" + "\n---\n".join(chunks_primary) if chunks_primary else "(empty)")
         dbg(
             f"RAG primary ({len(chunks_primary)} chunk(s), hint={section_hint!r})",
             "\n---\n".join(chunks_primary) if chunks_primary else "(empty)",

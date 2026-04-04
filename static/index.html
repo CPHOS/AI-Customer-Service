@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CPHOS AI 客服</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    /* Custom scrollbar */
+    #chat-container::-webkit-scrollbar { width: 6px; }
+    #chat-container::-webkit-scrollbar-track { background: transparent; }
+    #chat-container::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+
+    /* Typing indicator dots */
+    .dot { animation: bounce 1.2s infinite; }
+    .dot:nth-child(2) { animation-delay: 0.2s; }
+    .dot:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes bounce {
+      0%, 60%, 100% { transform: translateY(0); }
+      30%           { transform: translateY(-6px); }
+    }
+
+    /* Smooth message fade-in */
+    .msg-enter { animation: fadeSlide 0.25s ease-out; }
+    @keyframes fadeSlide {
+      from { opacity: 0; transform: translateY(8px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+  </style>
+</head>
+<body class="bg-slate-100 min-h-screen flex items-center justify-center p-4">
+
+  <!-- ── Card ──────────────────────────────────────────────────────────────── -->
+  <div class="w-full max-w-2xl flex flex-col bg-white rounded-2xl shadow-xl overflow-hidden" style="height: 88vh; max-height: 720px;">
+
+    <!-- Header -->
+    <div class="flex items-center justify-between px-5 py-3 bg-gradient-to-r from-blue-600 to-blue-500 text-white select-none">
+      <div class="flex items-center gap-3">
+        <div class="w-9 h-9 rounded-full bg-white/20 flex items-center justify-center text-lg">🤖</div>
+        <div>
+          <p class="font-semibold text-sm leading-tight">CPHOS AI 客服</p>
+          <p class="text-xs text-blue-100" id="status-text">正在初始化…</p>
+        </div>
+      </div>
+      <button id="clear-btn" title="清除对话记录"
+        class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs text-white/80 hover:text-white hover:bg-white/20 transition-colors">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3.5 h-3.5">
+          <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/>
+        </svg>
+        清除记录
+      </button>
+    </div>
+
+    <!-- Chat area -->
+    <div id="chat-container" class="flex-1 overflow-y-auto px-5 py-4 space-y-3">
+      <!-- Welcome message -->
+      <div class="flex items-start gap-2 msg-enter">
+        <div class="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-base flex-shrink-0">🤖</div>
+        <div class="max-w-[78%]">
+          <div class="bg-slate-100 text-slate-800 rounded-2xl rounded-tl-sm px-4 py-2.5 text-sm leading-relaxed">
+            您好！我是 CPHOS AI 客服助手，有什么可以帮您的吗？
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Input area -->
+    <div class="px-4 py-3 border-t border-slate-100 bg-white">
+      <div class="flex items-end gap-2">
+        <textarea
+          id="question-input"
+          rows="1"
+          placeholder="输入您的问题…（Enter 发送，Shift+Enter 换行）"
+          class="flex-1 resize-none rounded-xl border border-slate-200 px-4 py-2.5 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-400 max-h-32 leading-relaxed"
+          style="overflow-y: auto;"
+        ></textarea>
+        <button
+          id="send-btn"
+          class="flex-shrink-0 w-10 h-10 rounded-xl bg-blue-500 hover:bg-blue-600 disabled:bg-slate-300 disabled:cursor-not-allowed text-white flex items-center justify-center transition-colors"
+          disabled>
+          <!-- Send icon -->
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="w-5 h-5 rotate-90">
+            <path d="M3.478 2.405a.75.75 0 00-.926.94l2.432 7.905H13.5a.75.75 0 010 1.5H4.984l-2.432 7.905a.75.75 0 00.926.94 60.519 60.519 0 0018.445-8.986.75.75 0 000-1.218A60.517 60.517 0 003.478 2.405z" />
+          </svg>
+        </button>
+      </div>
+    </div>
+
+  </div><!-- /card -->
+
+<script>
+// ── Constants ─────────────────────────────────────────────────────────────────
+const SESSION_KEY = 'cphos_session_id';
+const HISTORY_KEY = 'cphos_history';
+
+// ── DOM refs ──────────────────────────────────────────────────────────────────
+const chatContainer = document.getElementById('chat-container');
+const input         = document.getElementById('question-input');
+const sendBtn       = document.getElementById('send-btn');
+const statusText    = document.getElementById('status-text');
+
+// ── Mutable state ─────────────────────────────────────────────────────────────
+let isWaiting = false;
+let sessionId = null;
+
+// ── UI helpers ────────────────────────────────────────────────────────────────
+function escapeHtml(text) {
+  return text
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/\n/g, '<br>');
+}
+
+function appendMessage(role, text, latency) {
+  const isUser = role === 'user';
+  const wrapper = document.createElement('div');
+  wrapper.className = `flex items-start gap-2 msg-enter${isUser ? ' justify-end' : ''}`;
+
+  const avatar = isUser
+    ? `<div class="w-8 h-8 rounded-full bg-blue-500 flex items-center justify-center text-white text-sm font-bold flex-shrink-0">我</div>`
+    : `<div class="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-base flex-shrink-0">🤖</div>`;
+
+  const bubble = isUser
+    ? `<div class="max-w-[78%]">
+         <div class="bg-blue-500 text-white rounded-2xl rounded-tr-sm px-4 py-2.5 text-sm leading-relaxed">${escapeHtml(text)}</div>
+       </div>`
+    : `<div class="max-w-[78%]">
+         <div class="bg-slate-100 text-slate-800 rounded-2xl rounded-tl-sm px-4 py-2.5 text-sm leading-relaxed">${escapeHtml(text)}</div>
+         ${latency !== undefined ? `<p class="text-xs text-slate-400 mt-1 ml-1">耗时 ${latency}s</p>` : ''}
+       </div>`;
+
+  wrapper.innerHTML = isUser ? `${bubble}${avatar}` : `${avatar}${bubble}`;
+  chatContainer.appendChild(wrapper);
+  chatContainer.scrollTop = chatContainer.scrollHeight;
+}
+
+function appendTyping() {
+  const el = document.createElement('div');
+  el.id = 'typing-indicator';
+  el.className = 'flex items-start gap-2 msg-enter';
+  el.innerHTML = `
+    <div class="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-base flex-shrink-0">🤖</div>
+    <div class="bg-slate-100 rounded-2xl rounded-tl-sm px-4 py-3 flex items-center gap-1">
+      <span class="dot w-2 h-2 rounded-full bg-slate-400 block"></span>
+      <span class="dot w-2 h-2 rounded-full bg-slate-400 block"></span>
+      <span class="dot w-2 h-2 rounded-full bg-slate-400 block"></span>
+    </div>`;
+  chatContainer.appendChild(el);
+  chatContainer.scrollTop = chatContainer.scrollHeight;
+}
+
+function removeTyping() {
+  document.getElementById('typing-indicator')?.remove();
+}
+
+// ── localStorage helpers ──────────────────────────────────────────────────────
+function loadHistory() {
+  try { return JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]'); }
+  catch { return []; }
+}
+
+function persistHistory(history) {
+  try { localStorage.setItem(HISTORY_KEY, JSON.stringify(history)); }
+  catch { /* storage full */ }
+}
+
+// Mark the last entry as pending (called right when the user submits)
+function markPending(question) {
+  const history = loadHistory();
+  history.push({ role: 'user', text: question, pending: true });
+  persistHistory(history);
+}
+
+// Called on success: remove pending flag + append bot reply
+function commitTurn(answerText, latency) {
+  const history = loadHistory();
+  const last = history[history.length - 1];
+  if (last?.pending) delete last.pending;
+  history.push({ role: 'bot', text: answerText, latency });
+  persistHistory(history);
+}
+
+// Called on failure: remove the orphaned pending entry
+function discardPending() {
+  const history = loadHistory();
+  if (history[history.length - 1]?.pending) history.pop();
+  persistHistory(history);
+}
+
+// ── Network ───────────────────────────────────────────────────────────────────
+async function doSend(question) {
+  try {
+    const res = await fetch('/chat', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ question, session_id: sessionId, source: 'web' }),
+    });
+
+    removeTyping();
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      discardPending();
+      appendMessage('bot', `❌ 请求失败（${res.status}）：${err.detail ?? '未知错误'}`);
+    } else {
+      const data = await res.json();
+      if (data.session_id) {
+        sessionId = data.session_id;
+        localStorage.setItem(SESSION_KEY, sessionId);
+      }
+      commitTurn(data.answer, data.latency_s);
+      appendMessage('bot', data.answer, data.latency_s);
+    }
+  } catch (err) {
+    removeTyping();
+    // Do NOT call discardPending() here — a network error or page-refresh abort
+    // should leave the pending entry intact so it is retried on the next page load.
+    appendMessage('bot', `❌ 网络错误：${err.message}`);
+  } finally {
+    isWaiting        = false;
+    sendBtn.disabled = input.value.trim() === '';
+    input.focus();
+  }
+}
+
+// ── Session ID ───────────────────────────────────────────────────────────────
+// Generate a UUID v4 client-side so session_id is in localStorage BEFORE the
+// first request goes out.  This way a refresh-while-waiting still sends the
+// same session_id and continues the same log file.
+function newUUID() {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+    const r = Math.random() * 16 | 0;
+    return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+  });
+}
+
+function ensureSessionId() {
+  if (!sessionId) {
+    sessionId = newUUID();
+    localStorage.setItem(SESSION_KEY, sessionId);
+  }
+}
+
+// ── Send message ──────────────────────────────────────────────────────────────
+function sendMessage() {
+  const question = input.value.trim();
+  if (!question || isWaiting) return;
+
+  ensureSessionId();   // persist session_id NOW, before the response comes back
+
+  isWaiting        = true;
+  sendBtn.disabled = true;
+  input.value      = '';
+  input.style.height = 'auto';
+
+  markPending(question);
+  appendMessage('user', question);
+  appendTyping();
+  doSend(question);
+}
+
+// ── Health check ──────────────────────────────────────────────────────────────
+async function checkHealth() {
+  try {
+    const res  = await fetch('/health');
+    const data = await res.json();
+    if (data.pipeline === 'ready') {
+      statusText.textContent = '在线';
+      statusText.className   = 'text-xs text-green-200';
+    } else {
+      statusText.textContent = '初始化中…';
+      setTimeout(checkHealth, 3000);
+    }
+  } catch {
+    statusText.textContent = '无法连接服务器';
+    statusText.className   = 'text-xs text-red-300';
+    setTimeout(checkHealth, 5000);
+  }
+}
+
+// ── Init (runs after all functions are defined) ───────────────────────────────
+function init() {
+  // Restore session ID
+  sessionId = localStorage.getItem(SESSION_KEY) || null;
+
+  // Restore chat history; detect any pending (in-flight) question
+  const history = loadHistory();
+  let pendingQuestion = null;
+
+  history.forEach(({ role, text, latency, pending }) => {
+    if (!pending) {
+      appendMessage(role, text, latency);
+    } else if (role === 'user') {
+      pendingQuestion = text;  // found an unanswered question
+    }
+  });
+
+  // If there was a pending question when the page was refreshed, restore the
+  // user message, show the typing indicator, and resend.
+  if (pendingQuestion) {
+    appendMessage('user', pendingQuestion);
+    appendTyping();
+    isWaiting        = true;
+    sendBtn.disabled = true;
+    doSend(pendingQuestion);
+  }
+
+  // Clear history button
+  document.getElementById('clear-btn').addEventListener('click', () => {
+    if (isWaiting) return;
+    localStorage.removeItem(HISTORY_KEY);
+    localStorage.removeItem(SESSION_KEY);
+    sessionId = null;
+    // Remove all messages except the static welcome bubble
+    const msgs = chatContainer.querySelectorAll('.msg-enter:not(:first-child)');
+    msgs.forEach(el => el.remove());
+  });
+
+  // Event listeners
+  input.addEventListener('input', () => {
+    input.style.height = 'auto';
+    input.style.height = Math.min(input.scrollHeight, 128) + 'px';
+    sendBtn.disabled = input.value.trim() === '' || isWaiting;
+  });
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      if (!sendBtn.disabled) sendMessage();
+    }
+  });
+  sendBtn.addEventListener('click', sendMessage);
+
+  checkHealth();
+}
+
+init();
+</script>
+</body>
+</html>
