@@ -35,11 +35,12 @@ class BaseAgent:
         extra_headers: dict[str, str] | None = None,
         max_attempts: int | None = None,
         retry_sleep: float | None = None,
+        read_timeout: float = 60.0,
     ) -> None:
         self._client = openai.OpenAI(
             api_key=api_key,
             base_url=base_url,
-            timeout=openai.Timeout(connect=10.0, read=60.0, write=10.0, pool=5.0),
+            timeout=openai.Timeout(connect=10.0, read=read_timeout, write=10.0, pool=5.0),
             default_headers=extra_headers or {},
         )
         self.model   = model

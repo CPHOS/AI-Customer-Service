@@ -64,6 +64,7 @@ def build_pipeline(
         embedding_model= config.EMBEDDING_MODEL,
         base_url       = config.LLM_BASE_URL,
         extra_headers  = {"HTTP-Referer": config.APP_SITE_URL, "X-OpenRouter-Title": config.APP_NAME},
+        read_timeout   = config.RETRIEVE_TIMEOUT,
     )
 
     _index_path = Path(load_index) if load_index else None
@@ -179,15 +180,16 @@ def build_pipeline(
         retry_sleep=config.LLM_RETRY_SLEEP,
     )
     return Pipeline(
-        classifier   = ClassifierAgent(config.CLASSIFIER_MODEL, config.OPENAI_API_KEY, config.LLM_BASE_URL, **_llm_kw),
-        executor     = ExecutorAgent  (config.EXECUTOR_MODEL,   config.OPENAI_API_KEY, config.LLM_BASE_URL, **_llm_kw),
-        verifier     = VerifierAgent  (config.VERIFIER_MODEL,   config.OPENAI_API_KEY, config.LLM_BASE_URL, **_llm_kw),
-        critic       = CriticAgent    (config.CRITIC_MODEL,     config.OPENAI_API_KEY, config.LLM_BASE_URL, **_llm_kw),
+        classifier   = ClassifierAgent(config.CLASSIFIER_MODEL, config.OPENAI_API_KEY, config.LLM_BASE_URL, **_llm_kw, read_timeout=config.CLASSIFY_TIMEOUT),
+        executor     = ExecutorAgent  (config.EXECUTOR_MODEL,   config.OPENAI_API_KEY, config.LLM_BASE_URL, **_llm_kw, read_timeout=config.EXECUTE_TIMEOUT),
+        verifier     = VerifierAgent  (config.VERIFIER_MODEL,   config.OPENAI_API_KEY, config.LLM_BASE_URL, **_llm_kw, read_timeout=config.VERIFY_TIMEOUT),
+        critic       = CriticAgent    (config.CRITIC_MODEL,     config.OPENAI_API_KEY, config.LLM_BASE_URL, **_llm_kw, read_timeout=config.CRITIC_TIMEOUT),
         retriever    = retriever,
         top_k        = top_k        if top_k        is not None else config.TOP_K_CHUNKS,
         max_retries  = max_retries  if max_retries  is not None else config.MAX_RETRIES,
         enable_dual_path = enable_dual_path if enable_dual_path is not None else config.ENABLE_DUAL_PATH,
         conv_logger  = ConversationLogger(conv_log_path, verbose=verbose),
+        pipeline_timeout = config.PIPELINE_TIMEOUT,
     )
 
 

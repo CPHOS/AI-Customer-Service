@@ -41,6 +41,10 @@ from utils.logger      import ConversationLogger, dbg, get_logger
 
 logger = get_logger(__name__)
 
+
+class PipelineTimeoutError(RuntimeError):
+    """Raised when the overall pipeline timeout is exceeded."""
+
 # ── Fallback messages ─────────────────────────────────────────────────────────
 _OUT_OF_SCOPE_REPLY = (
     "很抱歉，您的问题超出了我目前的知识范围，建议联系人工客服获取帮助。\n"
@@ -52,6 +56,12 @@ _EXHAUSTED_REPLY = (
     "很抱歉，我暂时无法为您提供满意的回答，请联系人工客服。\n"
     "(I was unable to produce a satisfactory answer after several attempts. "
     "Please contact human customer service.)"
+)
+
+_TIMEOUT_REPLY = (
+    "很抱歉，处理您的问题超时了，请稍后再试或联系人工客服。\n"
+    "(The request timed out. Please try again later or contact "
+    "human customer service.)"
 )
 
 
@@ -84,6 +94,7 @@ class Pipeline:
         max_retries:      int = 3,
         enable_dual_path: bool = True,
         conv_logger:      ConversationLogger | None = None,
+        pipeline_timeout: float = 120.0,
     ) -> None:
         self.classifier       = classifier
         self.executor         = executor
@@ -94,6 +105,19 @@ class Pipeline:
         self.max_retries      = max_retries
         self.enable_dual_path = enable_dual_path and critic is not None
         self.conv_logger      = conv_logger
+        self.pipeline_timeout = pipeline_timeout
+
+    def _check_timeout(self, _t0: float, stage: str) -> None:
+        """Raise PipelineTimeoutError if elapsed time exceeds pipeline_timeout."""
+        elapsed = time.monotonic() - _t0
+        if elapsed > self.pipeline_timeout:
+            logger.error(
+                "Pipeline timeout (%.1fs > %.1fs) at stage: %s",
+                elapsed, self.pipeline_timeout, stage,
+            )
+            raise PipelineTimeoutError(
+                f"Pipeline exceeded {self.pipeline_timeout}s timeout at stage: {stage}"
+            )
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -126,7 +150,10 @@ class Pipeline:
             if self.conv_logger else nullcontext()
         )
         with _ctx:
-            return self._answer_inner(question, user_id, source, client_ip, _t0)
+            try:
+                return self._answer_inner(question, user_id, source, client_ip, _t0)
+            except PipelineTimeoutError:
+                return _TIMEOUT_REPLY
 
     # ── Streaming public API ──────────────────────────────────────────────────
 
@@ -158,7 +185,10 @@ class Pipeline:
             if self.conv_logger else nullcontext()
         )
         with _ctx:
-            yield from self._answer_stream_inner(question, user_id, source, client_ip, _t0)
+            try:
+                yield from self._answer_stream_inner(question, user_id, source, client_ip, _t0)
+            except PipelineTimeoutError:
+                yield ("token", {"text": _TIMEOUT_REPLY})
 
     def _answer_stream_inner(
         self,
@@ -196,6 +226,7 @@ class Pipeline:
         trace["classifier_raw"] = classifier_raw
         trace["classifier_category"] = category
         dbg("Classifier output", f"category={category!r} raw={classifier_raw!r}")
+        self._check_timeout(_t0, "classify")
 
         if not self.classifier.is_in_scope(category):
             logger.info("Question classified out-of-scope (G). Declining.")
@@ -216,6 +247,7 @@ class Pipeline:
             f"RAG primary ({len(chunks_primary)} chunk(s), hint={section_hint!r})",
             "\n---\n".join(chunks_primary) if chunks_primary else "(empty)",
         )
+        self._check_timeout(_t0, "retrieve")
 
         # ── Step 3: Dual-path parallel execution ─────────────────────────────
         yield ("status", {"step": "generating", "message": "正在生成回答…"})
@@ -243,6 +275,7 @@ class Pipeline:
             logger.info("Critic selected answer (Path %s).", critic_choice)
         else:
             best_candidate = None
+        self._check_timeout(_t0, "execute")
 
         # ── Step 4: Verify → retry loop ───────────────────────────────────────
         previous_failures: list[tuple[str, str]] = []
@@ -284,6 +317,7 @@ class Pipeline:
                 "Attempt %d/%d invalid. Reason: %s",
                 attempt + 1, self.max_retries + 1, reason,
             )
+            self._check_timeout(_t0, f"verify_retry_{attempt + 1}")
 
         # ── Step 5: Exhausted ─────────────────────────────────────────────────
         trace["attempts"] = self.max_retries + 1
@@ -337,6 +371,7 @@ class Pipeline:
         trace["classifier_raw"] = classifier_raw
         trace["classifier_category"] = category
         dbg("Classifier output", f"category={category!r} raw={classifier_raw!r}")
+        self._check_timeout(_t0, "classify")
 
         if not self.classifier.is_in_scope(category):
             logger.info("Question classified out-of-scope (G). Declining.")
@@ -354,6 +389,7 @@ class Pipeline:
             f"RAG primary ({len(chunks_primary)} chunk(s), hint={section_hint!r})",
             "\n---\n".join(chunks_primary) if chunks_primary else "(empty)",
         )
+        self._check_timeout(_t0, "retrieve")
 
         # ── Step 3: Dual-path parallel execution ─────────────────────────────
         if self.enable_dual_path:
@@ -383,6 +419,7 @@ class Pipeline:
             logger.info("Critic selected answer (Path %s).", critic_choice)
         else:
             best_candidate = None
+        self._check_timeout(_t0, "execute")
 
         # ── Step 4: Verify → retry loop ───────────────────────────────────────
         # Critic winner (if any) is validated first; retries generate via Executor.
@@ -420,6 +457,7 @@ class Pipeline:
                 "Attempt %d/%d invalid. Reason: %s",
                 attempt + 1, self.max_retries + 1, reason,
             )
+            self._check_timeout(_t0, f"verify_retry_{attempt + 1}")
 
         # ── Step 5: Exhausted ─────────────────────────────────────────────────
         trace["attempts"] = self.max_retries + 1

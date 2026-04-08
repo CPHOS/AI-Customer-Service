@@ -44,6 +44,16 @@ LLM_RETRY_SLEEP:  float = float(os.environ.get("LLM_RETRY_SLEEP", "2.0"))
 # Set to "false" to disable and use the simpler single-path flow.
 ENABLE_DUAL_PATH: bool = os.environ.get("OPENROUTER_ENABLE_DUAL_PATH", "true").lower() != "false"
 
+# ── Timeout settings (seconds) ────────────────────────────────────────────────
+# Per-agent LLM read timeouts — controls how long the HTTP response can take.
+CLASSIFY_TIMEOUT: float = float(os.environ.get("CLASSIFY_TIMEOUT", "30"))
+EXECUTE_TIMEOUT:  float = float(os.environ.get("EXECUTE_TIMEOUT", "60"))
+VERIFY_TIMEOUT:   float = float(os.environ.get("VERIFY_TIMEOUT", "45"))
+CRITIC_TIMEOUT:   float = float(os.environ.get("CRITIC_TIMEOUT", "30"))
+RETRIEVE_TIMEOUT: float = float(os.environ.get("RETRIEVE_TIMEOUT", "30"))
+# Overall pipeline timeout — hard ceiling on a single answer() call.
+PIPELINE_TIMEOUT: float = float(os.environ.get("PIPELINE_TIMEOUT", "120"))
+
 # ── CPHOS MySQL database (db_api) ─────────────────────────────────────────────
 CPHOS_DB_HOST:     str = os.environ.get("CPHOS_DB_HOST", "")
 CPHOS_DB_PORT:     int = int(os.environ.get("CPHOS_DB_PORT", "3306"))

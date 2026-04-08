@@ -65,10 +65,11 @@ class Settings(BaseSettings):
     debug_mode:    bool       = False
 
     # ── Server ────────────────────────────────────────────────────────────────
-    host:             str  = "0.0.0.0"
-    port:             int  = 8000
-    reload:           bool = False
-    shutdown_timeout: int  = 5
+    host:             str   = "0.0.0.0"
+    port:             int   = 8000
+    reload:           bool  = False
+    shutdown_timeout: int   = 5
+    pipeline_timeout: float = 120.0   # hard ceiling (seconds) per /chat request
 
     # ── CORS ──────────────────────────────────────────────────────────────────
     # Comma-separated.  For production set to specific origins, e.g.:

@@ -122,7 +122,15 @@ async def chat(
         # starting a redundant pipeline run.
         logger.info("Dedup: joining in-flight pipeline task for session %s", sid)
         try:
-            answer, latency = await asyncio.shield(existing_task)
+            answer, latency = await asyncio.wait_for(
+                asyncio.shield(existing_task),
+                timeout=settings.pipeline_timeout,
+            )
+        except asyncio.TimeoutError:
+            raise HTTPException(
+                status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+                detail="请求处理超时，请稍后再试。(Request timed out.)",
+            )
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -153,7 +161,15 @@ async def chat(
         task.add_done_callback(lambda _: _inflight.pop(sid, None))
 
         try:
-            answer, latency = await asyncio.shield(task)
+            answer, latency = await asyncio.wait_for(
+                asyncio.shield(task),
+                timeout=settings.pipeline_timeout,
+            )
+        except asyncio.TimeoutError:
+            raise HTTPException(
+                status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+                detail="请求处理超时，请稍后再试。(Request timed out.)",
+            )
         except asyncio.CancelledError:
             # Handler cancelled (client disconnected) but the task keeps running
             # so a subsequent request from the same session can still join it.
