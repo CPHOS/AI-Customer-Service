@@ -63,6 +63,7 @@ def build_pipeline(
         api_key        = config.OPENAI_API_KEY,
         embedding_model= config.EMBEDDING_MODEL,
         base_url       = config.LLM_BASE_URL,
+        extra_headers  = {"HTTP-Referer": config.APP_SITE_URL, "X-OpenRouter-Title": config.APP_NAME},
     )
 
     _index_path = Path(load_index) if load_index else None
@@ -172,7 +173,11 @@ def build_pipeline(
             "          Use --docs or --refs-dir to load knowledge-base files."
         )
 
-    _llm_kw = dict(max_attempts=config.LLM_MAX_ATTEMPTS, retry_sleep=config.LLM_RETRY_SLEEP)
+    _llm_kw = dict(
+        extra_headers={"HTTP-Referer": config.APP_SITE_URL, "X-OpenRouter-Title": config.APP_NAME},
+        max_attempts=config.LLM_MAX_ATTEMPTS,
+        retry_sleep=config.LLM_RETRY_SLEEP,
+    )
     return Pipeline(
         classifier   = ClassifierAgent(config.CLASSIFIER_MODEL, config.OPENAI_API_KEY, config.LLM_BASE_URL, **_llm_kw),
         executor     = ExecutorAgent  (config.EXECUTOR_MODEL,   config.OPENAI_API_KEY, config.LLM_BASE_URL, **_llm_kw),

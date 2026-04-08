@@ -44,8 +44,13 @@ class Retriever:
         api_key: str,
         embedding_model: str = "text-embedding-3-small",
         base_url: str | None = None,
+        extra_headers: dict[str, str] | None = None,
     ) -> None:
-        self._client         = openai.OpenAI(api_key=api_key, base_url=base_url)
+        self._client         = openai.OpenAI(
+            api_key=api_key,
+            base_url=base_url,
+            default_headers=extra_headers or {},
+        )
         self.embedding_model = embedding_model
         self._chunks:     list[str]            = []
         self._sections:   list[str]            = []        # parallel to _chunks

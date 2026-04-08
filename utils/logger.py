@@ -241,12 +241,13 @@ class ConversationLogger:
     def record(
         self,
         *,
-        question:  str,
-        reply:     str,
-        user_id:   str = "anonymous",
-        source:    str = "cli",
-        category:  str = "?",
-        latency_s: float = 0.0,
+        question:     str,
+        reply:        str,
+        user_id:      str = "anonymous",
+        source:       str = "cli",
+        category:     str = "?",
+        latency_s:    float = 0.0,
+        agent_trace:  dict[str, Any] | None = None,
         **extra: Any,
     ) -> None:
         """Write one conversation turn to the per-session JSONL file.
@@ -256,13 +257,17 @@ class ConversationLogger:
         JSONL record.
 
         Args:
-            question:  The user's question text.
-            reply:     The final AI reply sent to the user.
-            user_id:   Session / user identifier (used as the filename stem).
-            source:    Channel name: ``"cli"`` / ``"api"`` / ``"wechat"`` / etc.
-            category:  Topic letter from the Classifier (A-G).
-            latency_s: Wall-clock seconds from question received to reply sent.
-            **extra:   Additional key-value pairs included in the JSONL record.
+            question:     The user's question text.
+            reply:        The final AI reply sent to the user.
+            user_id:      Session / user identifier (used as the filename stem).
+            source:       Channel name: ``"cli"`` / ``"api"`` / ``"wechat"`` / etc.
+            category:     Topic letter from the Classifier (A-G).
+            latency_s:    Wall-clock seconds from question received to reply sent.
+            agent_trace:  Per-agent raw outputs for debugging / analysis.
+                          Typical keys: ``classifier_raw``, ``executor_result``,
+                          ``critic_raw``, ``critic_choice``, ``verifier_valid``,
+                          ``verifier_reason``, ``attempts``.
+            **extra:      Additional key-value pairs included in the JSONL record.
         """
         ts_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
 
@@ -275,6 +280,8 @@ class ConversationLogger:
             "reply":     reply,
             "latency_s": round(latency_s, 3),
         }
+        if agent_trace:
+            rec["agent_trace"] = agent_trace
         rec.update(extra)
 
         safe_id    = self._safe_id(user_id)

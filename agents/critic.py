@@ -37,10 +37,12 @@ Nothing else — no explanation, no punctuation.
 class CriticAgent(BaseAgent):
     """Selects the better of two candidate answers."""
 
-    def choose_better(self, question: str, answer_a: str, answer_b: str) -> str:
-        """Return whichever of *answer_a* / *answer_b* is judged better.
+    def choose_better(self, question: str, answer_a: str, answer_b: str) -> tuple[str, str, str]:
+        """Return ``(chosen_answer, raw_llm_response, choice_label)``.
 
-        Falls back to *answer_a* if the LLM response cannot be parsed.
+        *choice_label* is ``"A"`` or ``"B"`` indicating which path was selected.
+
+        Falls back to *answer_a* (path A) if the LLM response cannot be parsed.
 
         Args:
             question: The original user question.
@@ -67,5 +69,5 @@ class CriticAgent(BaseAgent):
         i2 = raw.rfind("2")
 
         if i2 != -1 and (i1 == -1 or i2 > i1):
-            return answer_b
-        return answer_a  # default: prefer section-hinted answer
+            return answer_b, raw, "B"
+        return answer_a, raw, "A"  # default: prefer section-hinted answer

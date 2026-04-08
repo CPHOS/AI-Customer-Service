@@ -58,11 +58,15 @@ _SECTION_MAP: dict[str, str | None] = {
 class ClassifierAgent(BaseAgent):
     """Routes a question to a knowledge-domain category (A–G)."""
 
-    def classify(self, question: str) -> str:
-        """Return a topic letter A–F (in-scope) or G (out-of-scope).
+    def classify(self, question: str) -> tuple[str, str]:
+        """Return ``(category_letter, raw_llm_response)``.
 
         Args:
             question: The user's raw question text.
+
+        Returns:
+            A 2-tuple where the first element is the normalised topic letter
+            (A–G) and the second is the raw LLM output (for logging/debugging).
         """
         messages = [
             {"role": "system", "content": _SYSTEM_PROMPT},
@@ -73,7 +77,7 @@ class ClassifierAgent(BaseAgent):
         ]
         raw = self.ask_llm(messages, temperature=0.0, max_tokens=4)
         letter = next((c for c in raw.upper() if c in "ABCDEFG"), "G")
-        return letter
+        return letter, raw
 
     @staticmethod
     def is_in_scope(category: str) -> bool:

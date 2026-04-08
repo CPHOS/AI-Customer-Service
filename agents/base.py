@@ -32,6 +32,7 @@ class BaseAgent:
         api_key: str,
         base_url: str | None = None,
         *,
+        extra_headers: dict[str, str] | None = None,
         max_attempts: int | None = None,
         retry_sleep: float | None = None,
     ) -> None:
@@ -39,6 +40,7 @@ class BaseAgent:
             api_key=api_key,
             base_url=base_url,
             timeout=openai.Timeout(connect=10.0, read=60.0, write=10.0, pool=5.0),
+            default_headers=extra_headers or {},
         )
         self.model   = model
         self._max_attempts = max_attempts if max_attempts is not None else self._DEFAULT_MAX_ATTEMPTS

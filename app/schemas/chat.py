@@ -29,6 +29,17 @@ class ChatRequest(BaseModel):
         max_length=32,
         description="渠道标签，如 wechat / wecom / api",
     )
+    # wechat_openid: Annotated[
+    #     str | None,
+    #     Field(
+    #         default=None,
+    #         max_length=128,
+    #         description=(
+    #             "微信小程序 openid，用于识别用户身份和权限。"
+    #             "当提供该字段时，服务端将查询数据库获取用户角色和权限。"
+    #         ),
+    #     ),
+    # ] = None
 
 
 class ChatResponse(BaseModel):

@@ -1,4 +1,17 @@
 services:
+  redis:
+    image: redis:7-alpine
+    container_name: cphos-redis
+    restart: unless-stopped
+    command: ["redis-server", "--save", "60", "1", "--loglevel", "warning"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
   app:
     build:
       context: .
@@ -10,10 +23,17 @@ services:
     env_file:
       - .env
     environment:
-      SESSION_BACKEND: memory
+      SESSION_BACKEND: redis
+      REDIS_URL: redis://redis:6379/0
       SESSION_COOKIE_PATH: /cphos-ai/
       RELOAD: "false"
       HOST: 0.0.0.0
       PORT: "8000"
     volumes:
       - ./logs:/app/logs
+    depends_on:
+      redis:
+        condition: service_healthy
+
+volumes:
+  redis-data:

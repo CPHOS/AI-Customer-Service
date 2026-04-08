@@ -11,6 +11,10 @@ load_dotenv()
 OPENAI_API_KEY: str       = os.environ.get("OPENROUTER_API_KEY", "")
 LLM_BASE_URL:   str | None = os.environ.get("OPENROUTER_BASE_URL") or None
 
+# ── OpenRouter app identification headers ─────────────────────────────────────
+APP_SITE_URL: str  = os.environ.get("APP_SITE_URL", "https://cphos.cn/cphos-ai/")
+APP_NAME:     str  = os.environ.get("APP_NAME", "CPHOS AI客服")
+
 # ── Model selection (per-agent) ───────────────────────────────────────────────
 # Cheap model for routing, criticism & verification; heavier model for answer generation.
 CLASSIFIER_MODEL: str = os.environ.get("OPENROUTER_CLASSIFIER_MODEL", "openai/gpt-4o-mini")
@@ -39,3 +43,10 @@ LLM_RETRY_SLEEP:  float = float(os.environ.get("LLM_RETRY_SLEEP", "2.0"))
 # use the Critic to select the better answer before the Verifier validates it.
 # Set to "false" to disable and use the simpler single-path flow.
 ENABLE_DUAL_PATH: bool = os.environ.get("OPENROUTER_ENABLE_DUAL_PATH", "true").lower() != "false"
+
+# ── CPHOS MySQL database (db_api) ─────────────────────────────────────────────
+CPHOS_DB_HOST:     str = os.environ.get("CPHOS_DB_HOST", "")
+CPHOS_DB_PORT:     int = int(os.environ.get("CPHOS_DB_PORT", "3306"))
+CPHOS_DB_USER:     str = os.environ.get("CPHOS_DB_USER", "")
+CPHOS_DB_NAME:     str = os.environ.get("CPHOS_DB_NAME", "")
+CPHOS_DB_PASSWORD: str = os.environ.get("CPHOS_DB_PASSWORD", "")

@@ -62,11 +62,11 @@ def _extract_client_ip(request: Request) -> str:
 @router.post("/chat", response_model=ChatResponse)
 @limiter.limit("30/minute")
 async def chat(
-    request:  Request,              # must be a direct param for slowapi
-    response: Response,
-    req:      ChatRequest,
-    pipeline: Pipeline      = Depends(get_pipeline),
-    sessions: SessionStoreProtocol = Depends(get_session_store),
+    request:      Request,              # must be a direct param for slowapi
+    response:     Response,
+    req:          ChatRequest,
+    pipeline:     Pipeline             = Depends(get_pipeline),
+    sessions:     SessionStoreProtocol = Depends(get_session_store),
 ) -> ChatResponse:
     """
     Ask the AI assistant a question.
@@ -237,10 +237,10 @@ def _set_session_cookie(response: Response, session_id: str, settings) -> None:
 @router.post("/chat/stream")
 @limiter.limit("30/minute")
 async def chat_stream(
-    request:  Request,
-    req:      ChatRequest,
-    pipeline: Pipeline             = Depends(get_pipeline),
-    sessions: SessionStoreProtocol = Depends(get_session_store),
+    request:      Request,
+    req:          ChatRequest,
+    pipeline:     Pipeline             = Depends(get_pipeline),
+    sessions:     SessionStoreProtocol = Depends(get_session_store),
 ):
     """Stream the AI answer via Server-Sent Events (SSE).
 

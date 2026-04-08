@@ -30,7 +30,7 @@ from __future__ import annotations
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
-from typing import Generator
+from typing import Any, Generator
 
 from agents.classifier import ClassifierAgent
 from agents.critic     import CriticAgent
@@ -172,6 +172,8 @@ class Pipeline:
         def fmt(text: str) -> str:
             return text.replace("**", "")
 
+        trace: dict[str, Any] = {}
+
         def _record(reply: str, category: str = "?") -> None:
             latency = time.monotonic() - _t0
             logger.info(
@@ -184,14 +186,16 @@ class Pipeline:
                 self.conv_logger.record(
                     question=question, reply=reply, user_id=user_id,
                     source=source, category=category, latency_s=latency,
-                    client_ip=client_ip,
+                    client_ip=client_ip, agent_trace=trace or None,
                 )
 
         # ── Step 1: Classify ──────────────────────────────────────────────────
         yield ("status", {"step": "classifying", "message": "正在分析问题…"})
         logger.info("━━ Question ━━ user=%r ip=%r  %s", user_id, client_ip, question)
-        category = self.classifier.classify(question)
-        dbg("Classifier output", f"category={category!r}")
+        category, classifier_raw = self.classifier.classify(question)
+        trace["classifier_raw"] = classifier_raw
+        trace["classifier_category"] = category
+        dbg("Classifier output", f"category={category!r} raw={classifier_raw!r}")
 
         if not self.classifier.is_in_scope(category):
             logger.info("Question classified out-of-scope (G). Declining.")
@@ -207,6 +211,7 @@ class Pipeline:
         chunks_primary = self.retriever.query(
             question, top_k=self.top_k, section_hint=section_hint,
         )
+        trace["retriever_primary_count"] = len(chunks_primary)
         dbg(
             f"RAG primary ({len(chunks_primary)} chunk(s), hint={section_hint!r})",
             "\n---\n".join(chunks_primary) if chunks_primary else "(empty)",
@@ -216,6 +221,7 @@ class Pipeline:
         yield ("status", {"step": "generating", "message": "正在生成回答…"})
         if self.enable_dual_path:
             chunks_general = self.retriever.query(question, top_k=self.top_k)
+            trace["retriever_general_count"] = len(chunks_general)
             dbg(
                 f"RAG general ({len(chunks_general)} chunk(s))",
                 "\n---\n".join(chunks_general) if chunks_general else "(empty)",
@@ -226,11 +232,15 @@ class Pipeline:
                 fut_b = pool.submit(self.executor.execute, question, chunks_general)
             answer_a = fut_a.result()
             answer_b = fut_b.result()
+            trace["executor_path_a"] = answer_a
+            trace["executor_path_b"] = answer_b
             dbg("Executor Path A (section-hinted)", answer_a)
             dbg("Executor Path B (general)", answer_b)
-            best_candidate: str | None = self.critic.choose_better(question, answer_a, answer_b)
-            dbg("Critic selection", best_candidate)
-            logger.info("Critic selected answer (Path %s).", "A" if best_candidate == answer_a else "B")
+            best_candidate, critic_raw, critic_choice = self.critic.choose_better(question, answer_a, answer_b)
+            trace["critic_raw"] = critic_raw
+            trace["critic_choice"] = critic_choice
+            dbg("Critic selection", f"choice={critic_choice} raw={critic_raw!r}")
+            logger.info("Critic selected answer (Path %s).", critic_choice)
         else:
             best_candidate = None
 
@@ -244,15 +254,20 @@ class Pipeline:
                 raw_answer = self.executor.execute(
                     question, chunks_primary, previous_failures or None,
                 )
+            trace[f"executor_attempt_{attempt + 1}"] = raw_answer
             dbg(f"Executor (attempt {attempt + 1})", raw_answer)
 
             is_valid, reason = self.verifier.verify(
                 question, raw_answer,
                 current_iter=attempt, total_iter=self.max_retries,
             )
+            trace[f"verifier_attempt_{attempt + 1}"] = {"valid": is_valid, "reason": reason}
             dbg(f"Verifier (attempt {attempt + 1})", f"valid={is_valid}  reason={reason}")
 
             if is_valid:
+                trace["attempts"] = attempt + 1
+                trace["final_executor_result"] = raw_answer
+                trace["verifier_accepted"] = True
                 # ── Stream the summarize step ─────────────────────────────────
                 yield ("status", {"step": "polishing", "message": "正在优化回答…"})
                 full_parts: list[str] = []
@@ -271,6 +286,8 @@ class Pipeline:
             )
 
         # ── Step 5: Exhausted ─────────────────────────────────────────────────
+        trace["attempts"] = self.max_retries + 1
+        trace["verifier_accepted"] = False
         logger.error("All %d attempts exhausted. Escalating.", self.max_retries + 1)
         yield ("token", {"text": _EXHAUSTED_REPLY})
         _record(_EXHAUSTED_REPLY, category)
@@ -287,6 +304,8 @@ class Pipeline:
         def fmt(text: str) -> str:
             """Strip Markdown bold markers (**) from the reply before sending."""
             return text.replace("**", "")
+
+        trace: dict[str, Any] = {}
 
         def _done(reply: str, category: str = "?") -> str:
             """Record the turn and return the reply."""
@@ -308,13 +327,16 @@ class Pipeline:
                     category=category,
                     latency_s=latency,
                     client_ip=client_ip,
+                    agent_trace=trace or None,
                 )
             return reply
 
         # ── Step 1: Classify → topic category ────────────────────────────────
         logger.info("━━ Question ━━ user=%r ip=%r  %s", user_id, client_ip, question)
-        category = self.classifier.classify(question)
-        dbg("Classifier output", f"category={category!r}")
+        category, classifier_raw = self.classifier.classify(question)
+        trace["classifier_raw"] = classifier_raw
+        trace["classifier_category"] = category
+        dbg("Classifier output", f"category={category!r} raw={classifier_raw!r}")
 
         if not self.classifier.is_in_scope(category):
             logger.info("Question classified out-of-scope (G). Declining.")
@@ -327,8 +349,7 @@ class Pipeline:
         chunks_primary = self.retriever.query(
             question, top_k=self.top_k, section_hint=section_hint
         )
-        # print(f"Retrieved {len(chunks_primary)} chunk(s) with section hint {section_hint!r}.")
-        # print("Chunks:\n" + "\n---\n".join(chunks_primary) if chunks_primary else "(empty)")
+        trace["retriever_primary_count"] = len(chunks_primary)
         dbg(
             f"RAG primary ({len(chunks_primary)} chunk(s), hint={section_hint!r})",
             "\n---\n".join(chunks_primary) if chunks_primary else "(empty)",
@@ -337,6 +358,7 @@ class Pipeline:
         # ── Step 3: Dual-path parallel execution ─────────────────────────────
         if self.enable_dual_path:
             chunks_general = self.retriever.query(question, top_k=self.top_k)
+            trace["retriever_general_count"] = len(chunks_general)
             dbg(
                 f"RAG general ({len(chunks_general)} chunk(s))",
                 "\n---\n".join(chunks_general) if chunks_general else "(empty)",
@@ -348,13 +370,17 @@ class Pipeline:
                 fut_b = pool.submit(self.executor.execute, question, chunks_general)
             answer_a = fut_a.result()
             answer_b = fut_b.result()
+            trace["executor_path_a"] = answer_a
+            trace["executor_path_b"] = answer_b
             dbg("Executor Path A (section-hinted)", answer_a)
             dbg("Executor Path B (general)", answer_b)
 
             # Critic picks the better pre-candidate
-            best_candidate: str | None = self.critic.choose_better(question, answer_a, answer_b)
-            dbg("Critic selection", best_candidate)
-            logger.info("Critic selected answer (Path %s).", "A" if best_candidate == answer_a else "B")
+            best_candidate, critic_raw, critic_choice = self.critic.choose_better(question, answer_a, answer_b)
+            trace["critic_raw"] = critic_raw
+            trace["critic_choice"] = critic_choice
+            dbg("Critic selection", f"choice={critic_choice} raw={critic_raw!r}")
+            logger.info("Critic selected answer (Path %s).", critic_choice)
         else:
             best_candidate = None
 
@@ -369,6 +395,7 @@ class Pipeline:
                 raw_answer = self.executor.execute(
                     question, chunks_primary, previous_failures or None
                 )
+            trace[f"executor_attempt_{attempt + 1}"] = raw_answer
             dbg(f"Executor (attempt {attempt + 1})", raw_answer)
 
             is_valid, reason = self.verifier.verify(
@@ -376,10 +403,15 @@ class Pipeline:
                 current_iter=attempt,
                 total_iter=self.max_retries,
             )
+            trace[f"verifier_attempt_{attempt + 1}"] = {"valid": is_valid, "reason": reason}
             dbg(f"Verifier (attempt {attempt + 1})", f"valid={is_valid}  reason={reason}")
 
             if is_valid:
+                trace["attempts"] = attempt + 1
+                trace["final_executor_result"] = raw_answer
+                trace["verifier_accepted"] = True
                 final = self.verifier.summarize(question, raw_answer)
+                trace["verifier_summarized"] = final
                 dbg("Verifier summarize", final)
                 return _done(fmt(final), category)
 
@@ -390,5 +422,7 @@ class Pipeline:
             )
 
         # ── Step 5: Exhausted ─────────────────────────────────────────────────
+        trace["attempts"] = self.max_retries + 1
+        trace["verifier_accepted"] = False
         logger.error("All %d attempts exhausted. Escalating.", self.max_retries + 1)
         return _done(_EXHAUSTED_REPLY, category)
