@@ -149,15 +149,15 @@ def build_pipeline(
                     retriever.add_documents(chunks, section=section)
 
         # ── Load arbitrary document files ─────────────────────────────────────
-        if doc_paths:
-            logger.info("Loading %d additional document(s)…", len(doc_paths))
-            for path in doc_paths:
-                section = Path(path).stem
-                chunks  = load_documents([path], word_length=config.CHUNK_WORD_LENGTH)
-                logger.info(
-                    "  %s → %d chunk(s) (section=%r)", Path(path).name, len(chunks), section
-                )
-                retriever.add_documents(chunks, section=section)
+        # if doc_paths:
+        #     logger.info("Loading %d additional document(s)…", len(doc_paths))
+        #     for path in doc_paths:
+        #         section = Path(path).stem
+        #         chunks  = load_documents([path], word_length=config.CHUNK_WORD_LENGTH)
+        #         logger.info(
+        #             "  %s → %d chunk(s) (section=%r)", Path(path).name, len(chunks), section
+        #         )
+        #         retriever.add_documents(chunks, section=section)
 
         logger.info(
             "Indexing complete. Total chunks: %d. "

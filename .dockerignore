@@ -7,6 +7,12 @@ __pycache__
 *.pyd
 .pytest_cache
 .mypy_cache
+.ruff_cache
+.cache
 .DS_Store
+.env
+.env.*
+!.env.example
+logs/
 logs/*.jsonl
 logs/*.log

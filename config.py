@@ -13,7 +13,7 @@ LLM_BASE_URL:   str | None = os.environ.get("OPENROUTER_BASE_URL") or None
 
 # ── OpenRouter app identification headers ─────────────────────────────────────
 APP_SITE_URL: str  = os.environ.get("APP_SITE_URL", "https://cphos.cn/cphos-ai/")
-APP_NAME:     str  = os.environ.get("APP_NAME", "CPHOS AI客服")
+APP_NAME:     str  = os.environ.get("APP_NAME", "CPHOS AI Customer Service")
 
 # ── Model selection (per-agent) ───────────────────────────────────────────────
 # Cheap model for routing, criticism & verification; heavier model for answer generation.
