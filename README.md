@@ -9,20 +9,28 @@
 ```
 AI-Customer-Service/
 ├── main.py              # CLI 入口，参数解析，构建 Pipeline
+├── server.py            # Uvicorn 入口
 ├── pipeline.py          # 核心编排：Classifier → Executor → Critic → Verifier
 ├── config.py            # 全局配置，支持环境变量覆盖
 ├── agents/
-│   ├── base.py          # BaseAgent：封装 LLM 调用与重试逻辑
-│   ├── classifier.py    # ClassifierAgent：7 类话题路由（A–G）
-│   ├── executor.py      # ExecutorAgent：根据检索上下文生成候选回答
+│   ├── base.py          # BaseAgent：封装 LLM 调用、重试逻辑及 tool-call 循环
+│   ├── classifier.py    # ClassifierAgent：8 类话题路由（A–H）
+│   ├── executor.py      # ExecutorAgent：RAG 回答 + 时效性问题官网抓取
 │   ├── critic.py        # CriticAgent：从双路候选中选出更优回答
 │   └── verifier.py      # VerifierAgent：验证回答质量，输出最终回复
 ├── rag/
 │   ├── retriever.py     # 基于 OpenAI Embeddings + NumPy 的内存向量检索
 │   └── document.py      # 文档加载器，支持 .txt / .md / .pdf / .yml
 ├── utils/
-│   └── logger.py        # 结构化日志 + ConversationLogger（JSONL 对话记录）
-├── references/          # YAML 格式知识库（按话题分文件）
+│   ├── logger.py        # 结构化日志（UTC+8）+ ConversationLogger（JSONL 对话记录）
+│   └── web_fetch.py     # CPHOS 官网页面抓取（白名单枚举，非任意 URL）
+├── app/                 # FastAPI 应用
+│   ├── main.py          # 应用工厂 create_app()
+│   ├── config.py        # Pydantic Settings
+│   ├── routers/         # /chat, /health 路由
+│   └── schemas/         # 请求/响应模型
+├── docker-compose.yml   # Docker Compose 部署配置
+├── Dockerfile           # 容器镜像构建
 ├── .env.example         # 环境变量模板
 ├── pyproject.toml       # uv 项目定义
 └── requirements.txt     # pip 依赖列表
@@ -101,6 +109,34 @@ python main.py --help
 uv run python main.py --help
 ```
 
+---
+
+## Docker 部署
+
+镜像由 GitHub Actions 自动构建并推送到 GHCR。服务器上无需构建，只需拉取运行。
+
+### 首次部署
+
+```bash
+mkdir ~/AI-CS && cd ~/AI-CS
+
+# 准备配置
+cp .env.example .env        # 编辑 .env 填入 API Key 等
+# 将 references/ 和 cphos.npz 上传到此目录
+
+# 启动（含 Redis）
+docker compose pull && docker compose up -d
+```
+
+### 更新版本
+
+```bash
+docker compose pull app && docker compose up -d app
+docker image prune -f       # 清理旧镜像
+```
+
+---
+
 ## Pipeline
 
 每次用户提问经过以下流程处理：
@@ -110,32 +146,33 @@ uv run python main.py --help
    │
    ▼
 ┌─────────────────────────────────┐
-│  1. ClassifierAgent             │  话题路由 → A/B/C/D/E/F（在范围）或 G（超出范围）
-│     7 类：成绩/身份/赛季/考试/  │
-│     小程序/评卷/无关            │
+│  1. ClassifierAgent             │  话题路由 → A–F（知识库）/ G（超出范围）/ H（时效性）
+│     8 类：成绩/身份/赛季/考试/  │
+│     小程序/评卷/无关/时效性     │
 └─────────────┬───────────────────┘
               │ G → 礼貌拒绝
-              ▼
-┌─────────────────────────────────┐
-│  2. Retriever（双路检索）       │
-│     Path A：section-hint 检索   │  按话题类别 boost 候选 chunk（×1.2）
-│     Path B：通用检索            │  无 section 偏置
-└─────────────┬───────────────────┘
-              ▼
-┌─────────────────────────────────┐
-│  3. ExecutorAgent × 2（并行）   │  ThreadPoolExecutor，两路同时生成候选回答
-└─────────────┬───────────────────┘
-              ▼
-┌─────────────────────────────────┐
-│  4. CriticAgent                 │  LLM 评审，选出更优的候选回答
-└─────────────┬───────────────────┘
-              ▼
-┌─────────────────────────────────┐
-│  5. VerifierAgent（重试循环）   │  验证回答质量（VALID/INVALID + 评分）
-│     宽容递增：score + iter×1.0  │  多次失败后自动晋级，避免无限循环
-│     → 通过：summarize 润色输出  │
-│     → 失败：重新执行 Executor   │
-└─────────────┬───────────────────┘
+              │ H → 跳转官网抓取路径 ────────────────┐
+              ▼                                      │
+┌─────────────────────────────────┐                  │
+│  2. Retriever（双路检索）       │                  │
+│     Path A：section-hint 检索   │                  │
+│     Path B：通用检索            │                  │
+└─────────────┬───────────────────┘                  │
+              ▼                                      ▼
+┌─────────────────────────────────┐   ┌──────────────────────────────────┐
+│  3. ExecutorAgent × 2（并行）   │   │  3H. ExecutorAgent + fetch_page  │
+│     基于 RAG 上下文生成候选回答 │   │      工具调用：抓取 CPHOS 官网   │
+└─────────────┬───────────────────┘   │      白名单页面获取实时信息      │
+              ▼                       └──────────────┬───────────────────┘
+┌─────────────────────────────────┐                  │
+│  4. CriticAgent                 │                  │
+│     LLM 评审，选出更优候选回答  │                  │
+└─────────────┬───────────────────┘                  │
+              ▼                                      ▼
+┌─────────────────────────────────────────────────────┐
+│  5. VerifierAgent（验证 + 润色）                    │
+│     → summarize 输出最终回复                        │
+└─────────────┬───────────────────────────────────────┘
               ▼
 ┌─────────────────────────────────┐
 │  6. ConversationLogger          │  追加写入 JSONL，记录问答/分类/耗时
@@ -164,3 +201,5 @@ uv run python main.py --help
 | `OPENROUTER_TOP_K_CHUNKS` | 每次检索返回的 chunk 数 | `5` |
 | `OPENROUTER_MAX_RETRIES` | Executor → Verifier 最大重试次数 | `3` |
 | `OPENROUTER_ENABLE_DUAL_PATH` | 启用双路并行执行 | `true` |
+| `SESSION_BACKEND` | 会话存储后端 | `memory`（生产用 `redis`）|
+| `REDIS_URL` | Redis 连接地址 | — |
