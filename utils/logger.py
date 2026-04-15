@@ -55,9 +55,11 @@ import logging
 import sys
 import threading
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Iterator
+
+_CST = timezone(timedelta(hours=8))
 
 # ── Request-ID correlation ────────────────────────────────────────────────────
 # Populated by the ``request_log_context`` context-manager (called from the
@@ -81,8 +83,19 @@ _DATE_FMT = "%Y-%m-%d %H:%M:%S"
 
 _request_id_filter = _RequestIDFilter()
 
+
+class _CSTFormatter(logging.Formatter):
+    """Formatter that always uses Asia/Shanghai (UTC+8) timestamps."""
+
+    def formatTime(self, record: logging.LogRecord, datefmt: str | None = None) -> str:
+        ct = datetime.fromtimestamp(record.created, tz=_CST)
+        if datefmt:
+            return ct.strftime(datefmt)
+        return ct.strftime(self.default_time_format)
+
+
 _console_handler = logging.StreamHandler(sys.stderr)
-_console_handler.setFormatter(logging.Formatter(_FMT, datefmt=_DATE_FMT))
+_console_handler.setFormatter(_CSTFormatter(_FMT, datefmt=_DATE_FMT))
 _console_handler.setLevel(logging.WARNING)   # silent by default
 
 

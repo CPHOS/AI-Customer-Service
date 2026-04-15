@@ -10,7 +10,7 @@ Orchestrated directly in code; no agent framework is used.
 from __future__ import annotations
 
 from agents.base import BaseAgent
-from utils.web_fetch import fetch_page as _fetch_page
+from utils.web_fetch import fetch_page as _fetch_page, ALLOWED_PAGES
 
 _SYSTEM_PROMPT = """\
 You are an AI customer service assistant for CPHOS (Chinese Physics Olympiad S).
@@ -43,18 +43,23 @@ You can help users with questions about:
 5. Be concise and friendly. Respond in the same language as the user's question.
 
 ## Web fetch tool
-You have access to a `fetch_page` tool that retrieves content from CPHOS
-official web pages (cphos.cn domain only).  Use it **only** when the
-knowledge-base context provided below is clearly insufficient to answer the
-question — for example, when the user asks about the most recent exam
-schedule, an upcoming competition date, or a recent official announcement
-that would not appear in a static knowledge base.
+You have access to a `fetch_page` tool that retrieves content from specific
+pre-approved CPHOS official web pages.  The available pages are:
+  - notification  — 联考通知
+  - organization  — 关于我们
+  - resource      — 资料下载
+  - events        — 往期活动
+Use the tool **only** when the knowledge-base context provided below is
+clearly insufficient — for example, when the user asks about the most
+recent exam schedule, an upcoming competition, or a recent announcement.
 Do NOT call the tool for general platform-usage questions that the context
-already covers.  Suggested entry point: https://cphos.cn/
+already covers.
 """
 
 
 # ── Tool definition (OpenAI function-calling spec) ───────────────────────────
+
+_page_keys_desc = ", ".join(f'"{k}" ({v})' for k, v in ALLOWED_PAGES.items())
 
 _FETCH_PAGE_TOOL: dict = {
     "type": "function",
@@ -68,15 +73,16 @@ _FETCH_PAGE_TOOL: dict = {
         "parameters": {
             "type": "object",
             "properties": {
-                "url": {
+                "page_key": {
                     "type": "string",
+                    "enum": list(ALLOWED_PAGES.keys()),
                     "description": (
-                        "Full URL of a page under cphos.cn to fetch, "
-                        "e.g. https://www.cphos.cn/"
+                        "Which CPHOS page to fetch. Available: "
+                        + _page_keys_desc
                     ),
                 },
             },
-            "required": ["url"],
+            "required": ["page_key"],
         },
     },
 }
@@ -86,8 +92,8 @@ _TOOLS = [_FETCH_PAGE_TOOL]
 # ── Tool executor (maps tool name → local function) ──────────────────────
 
 def _run_fetch_page(args: dict) -> str:
-    url = args.get("url", "")
-    return _fetch_page(url)
+    page_key = args.get("page_key", "")
+    return _fetch_page(page_key)
 
 _TOOL_EXECUTOR = {"fetch_page": _run_fetch_page}
 

@@ -1,13 +1,11 @@
-"""Fetches plain text from CPHOS official web pages.
+"""Fetches plain text from pre-approved CPHOS official web pages.
 
-Security: only URLs whose host is cphos.cn (or a subdomain) are allowed.
-All other domains raise ValueError so the LLM-provided URL is always
-validated before any network request is made.
+Only a hard-coded set of page keys is allowed. The LLM picks a key
+(not a raw URL), and this module resolves it to the real URL.
 """
 from __future__ import annotations
 
 import urllib.error
-import urllib.parse
 import urllib.request
 from html.parser import HTMLParser
 
@@ -15,8 +13,15 @@ from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-# ── Security: hard-coded domain allowlist ────────────────────────────────────
-_ALLOWED_BASE_DOMAIN = "cphos.cn"
+# ── Security: hard-coded URL allowlist ────────────────────────────────────────
+# Only these exact page keys are fetchable. The LLM picks a key, not a URL.
+
+ALLOWED_PAGES: dict[str, str] = {
+    "notification": "https://cphos.cn/index.php/category/notification",
+    "organization": "https://cphos.cn/index.php/organization",
+    "resource":     "https://cphos.cn/index.php/sdm_categories/resource",
+    "events":       "https://cphos.cn/index.php/category/events",
+}
 
 _FETCH_TIMEOUT = 10      # seconds
 _MAX_CHARS     = 4_000   # characters returned to the model
@@ -54,26 +59,24 @@ class _TextExtractor(HTMLParser):
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def fetch_page(url: str, max_chars: int = _MAX_CHARS) -> str:
-    """Fetch *url* and return extracted plain text (at most *max_chars* chars).
+def fetch_page(page_key: str, max_chars: int = _MAX_CHARS) -> str:
+    """Fetch a pre-approved CPHOS page and return extracted plain text.
 
     Args:
-        url:       The page to fetch.  Must be under cphos.cn.
+        page_key:  One of the keys in :data:`ALLOWED_PAGES`.
         max_chars: Maximum characters to return (excess is truncated).
 
     Returns:
-        Extracted plain text, or an ``[Error: …]`` string on network failure
-        so that the calling LLM can handle unavailable pages gracefully.
+        Extracted plain text, or an ``[Error: …]`` string on failure.
 
     Raises:
-        ValueError: if the URL's host is not under the allowed domain.
+        ValueError: if *page_key* is not in the allowlist.
     """
-    parsed = urllib.parse.urlparse(url)
-    netloc = parsed.netloc.lower()
-    if netloc != _ALLOWED_BASE_DOMAIN and not netloc.endswith("." + _ALLOWED_BASE_DOMAIN):
+    url = ALLOWED_PAGES.get(page_key)
+    if url is None:
+        valid = ", ".join(sorted(ALLOWED_PAGES))
         raise ValueError(
-            f"Fetching '{parsed.netloc}' is not permitted. "
-            f"Only pages under {_ALLOWED_BASE_DOMAIN} may be accessed."
+            f"Unknown page_key '{page_key}'. Valid keys: {valid}"
         )
 
     req = urllib.request.Request(

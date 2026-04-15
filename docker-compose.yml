@@ -13,9 +13,7 @@ services:
       retries: 3
 
   app:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: ${APP_IMAGE:-ghcr.io/cphos/ai-customer-service:latest}
     container_name: cphos-app
     restart: unless-stopped
     ports:
@@ -28,6 +26,8 @@ services:
       PORT: "8000"
     volumes:
       - ./logs:/app/logs
+      - ./references:/app/references:ro
+      - ./cphos.npz:/app/cphos.npz:ro
     depends_on:
       redis:
         condition: service_healthy
