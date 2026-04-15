@@ -54,13 +54,16 @@ CPHOS official website.  You MUST call the `fetch_page` tool to retrieve the
 relevant page before answering.
 
 Available pages you can fetch:
-  - notification  — 联考通知 (exam/competition announcements)
-  - organization  — 关于我们 (about CPHOS)
-  - resource      — 资料下载 (downloadable materials)
-  - events        — 往期活动 (past events and activities)
+  - notification  — 联考通知 (latest exam/competition announcements, schedules)
+  - events        — 往期活动 (past CPHOS events and activities)
+  - about         — 关于我们 (about CPHOS organization)
+  - latest        — 最新文章 (all recent posts, regardless of category)
 
 Strategy:
 1. Decide which page(s) are most likely to contain the answer.
+   - For questions about the next/latest exam → try "notification" first.
+   - For questions about past events → try "events".
+   - If unsure → try "latest" to see all recent posts.
 2. Call `fetch_page` with the appropriate page_key.
 3. Read the returned content carefully.
 4. If the first page does not contain the answer, try another relevant page.
@@ -68,7 +71,7 @@ Strategy:
 6. Respond in the same language as the user's question.
 
 Do NOT fabricate any dates, names, or specifics. Only use information from
-the fetched page content.
+the fetched content.
 """
 
 # ── Tool definition (OpenAI function-calling spec) ───────────────────────────

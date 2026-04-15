@@ -1,10 +1,16 @@
-"""Fetches plain text from pre-approved CPHOS official web pages.
+"""Fetches content from the CPHOS official website via WordPress REST API.
+
+The CPHOS website is a WordPress site with JS-rendered front-end, so plain
+HTML fetching returns empty content. Instead, we use the public WP REST API
+(``/wp-json/wp/v2/posts``) which returns structured JSON with full text.
 
 Only a hard-coded set of page keys is allowed. The LLM picks a key
-(not a raw URL), and this module resolves it to the real URL.
+(not a raw URL), and this module resolves it to the appropriate API query.
 """
 from __future__ import annotations
 
+import json
+import re
 import urllib.error
 import urllib.request
 from html.parser import HTMLParser
@@ -13,104 +19,160 @@ from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-# ── Security: hard-coded URL allowlist ────────────────────────────────────────
-# Only these exact page keys are fetchable. The LLM picks a key, not a URL.
+# ── WordPress REST API base ──────────────────────────────────────────────────
+_WP_API_BASE = "https://cphos.cn/wp-json/wp/v2"
+
+# category slug → WP category ID (from /wp-json/wp/v2/categories)
+_CATEGORY_IDS: dict[str, int] = {
+    "notification": 7,    # 联考通知
+    "events":       30,   # 活动
+    "data":         4,    # 数据分析
+    "exam-analysis": 3,   # 试题分析
+    "about-us":     6,    # 关于我们
+}
+
+# ── Security: hard-coded page key allowlist ──────────────────────────────────
+# The LLM picks one of these keys. Each key maps to a WP REST API query.
 
 ALLOWED_PAGES: dict[str, str] = {
-    "notification": "https://cphos.cn/index.php/category/notification",
-    "organization": "https://cphos.cn/index.php/organization",
-    "resource":     "https://cphos.cn/index.php/sdm_categories/resource",
-    "events":       "https://cphos.cn/index.php/category/events",
+    "notification": "联考通知 — 最新联考公告、报名与赛历",
+    "events":       "往期活动 — CPHOS 活动回顾",
+    "about":        "关于我们 — CPHOS 组织介绍",
+    "latest":       "最新文章 — 全站最新发布的内容",
 }
 
 _FETCH_TIMEOUT = 10      # seconds
 _MAX_CHARS     = 4_000   # characters returned to the model
+_MAX_POSTS     = 5       # number of posts to fetch per query
 
 
-# ── HTML → plain-text extractor ──────────────────────────────────────────────
+# ── HTML strip helper ────────────────────────────────────────────────────────
 
-class _TextExtractor(HTMLParser):
-    """Strips tags; accumulates visible text, discarding script/style blocks."""
-
-    _SKIP_TAGS = frozenset({"script", "style", "head", "meta", "link", "noscript"})
+class _HTMLStripper(HTMLParser):
+    """Minimal HTML tag stripper for WP excerpt/content fields."""
 
     def __init__(self) -> None:
         super().__init__()
         self._parts: list[str] = []
-        self._skip_depth = 0
-
-    def handle_starttag(self, tag: str, attrs) -> None:
-        if tag.lower() in self._SKIP_TAGS:
-            self._skip_depth += 1
-
-    def handle_endtag(self, tag: str) -> None:
-        if tag.lower() in self._SKIP_TAGS:
-            self._skip_depth = max(0, self._skip_depth - 1)
 
     def handle_data(self, data: str) -> None:
-        if self._skip_depth == 0:
-            stripped = data.strip()
-            if stripped:
-                self._parts.append(stripped)
+        self._parts.append(data)
 
     def get_text(self) -> str:
-        return "\n".join(self._parts)
+        return "".join(self._parts).strip()
+
+
+def _strip_html(html: str) -> str:
+    """Remove HTML tags and return plain text."""
+    s = _HTMLStripper()
+    s.feed(html)
+    return s.get_text()
+
+
+# ── Internal fetcher ─────────────────────────────────────────────────────────
+
+def _api_get(url: str) -> list | dict:
+    """GET a WP REST API endpoint and return parsed JSON."""
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "CPHOS-AI-Chatbot/1.0",
+            "Accept": "application/json",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=_FETCH_TIMEOUT) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def _fetch_posts(category_id: int | None = None, per_page: int = _MAX_POSTS) -> str:
+    """Fetch recent posts, optionally filtered by category, and format as text."""
+    params = f"per_page={per_page}&_fields=title,date,link,excerpt"
+    if category_id is not None:
+        params += f"&categories={category_id}"
+    url = f"{_WP_API_BASE}/posts?{params}"
+
+    data = _api_get(url)
+    if not data:
+        return "(该分类下暂无文章)"
+
+    lines: list[str] = []
+    for post in data:
+        title = _strip_html(post.get("title", {}).get("rendered", ""))
+        date  = post.get("date", "")[:10]   # YYYY-MM-DD
+        link  = post.get("link", "")
+        excerpt_html = post.get("excerpt", {}).get("rendered", "")
+        excerpt = _strip_html(excerpt_html)
+        # Clean up WP's [...] and &nbsp;
+        excerpt = re.sub(r"\s*\[&hellip;\]", "…", excerpt)
+        excerpt = excerpt.replace("\xa0", " ").strip()
+
+        lines.append(f"📌 {title}")
+        lines.append(f"   日期: {date}")
+        if excerpt:
+            lines.append(f"   摘要: {excerpt}")
+        if link:
+            lines.append(f"   链接: {link}")
+        lines.append("")
+
+    return "\n".join(lines).strip()
+
+
+def _fetch_page_by_slug(slug: str) -> str:
+    """Fetch a single WordPress page by slug (for 'about' etc.)."""
+    url = f"{_WP_API_BASE}/pages?slug={slug}&_fields=title,content"
+    data = _api_get(url)
+    if not data:
+        return "(未找到该页面)"
+    page = data[0]
+    title = _strip_html(page.get("title", {}).get("rendered", ""))
+    content = _strip_html(page.get("content", {}).get("rendered", ""))
+    return f"{title}\n\n{content}"
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def fetch_page(page_key: str, max_chars: int = _MAX_CHARS) -> str:
-    """Fetch a pre-approved CPHOS page and return extracted plain text.
+    """Fetch CPHOS content by page_key via WordPress REST API.
 
     Args:
         page_key:  One of the keys in :data:`ALLOWED_PAGES`.
         max_chars: Maximum characters to return (excess is truncated).
 
     Returns:
-        Extracted plain text, or an ``[Error: …]`` string on failure.
+        Formatted plain text, or an ``[Error: …]`` string on failure.
 
     Raises:
         ValueError: if *page_key* is not in the allowlist.
     """
-    url = ALLOWED_PAGES.get(page_key)
-    if url is None:
+    if page_key not in ALLOWED_PAGES:
         valid = ", ".join(sorted(ALLOWED_PAGES))
         raise ValueError(
             f"Unknown page_key '{page_key}'. Valid keys: {valid}"
         )
 
-    req = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": "Mozilla/5.0",
-            "Accept": "text/html,application/xhtml+xml,*/*",
-            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-        },
-    )
-
     try:
-        with urllib.request.urlopen(req, timeout=_FETCH_TIMEOUT) as resp:
-            ct      = resp.headers.get("Content-Type", "")
-            charset = "utf-8"
-            if "charset=" in ct:
-                charset = ct.split("charset=")[-1].strip().split(";")[0].strip()
-            html = resp.read().decode(charset, errors="replace")
+        if page_key == "notification":
+            text = _fetch_posts(category_id=_CATEGORY_IDS["notification"])
+        elif page_key == "events":
+            text = _fetch_posts(category_id=_CATEGORY_IDS["events"])
+        elif page_key == "about":
+            text = _fetch_page_by_slug("organization")
+        elif page_key == "latest":
+            text = _fetch_posts()   # no category filter → all recent
+        else:
+            text = "(unknown page_key)"
     except urllib.error.HTTPError as exc:
-        logger.warning("fetch_page HTTP %s: %s", exc.code, url)
-        return f"[Error: HTTP {exc.code} when fetching {url}]"
+        logger.warning("fetch_page HTTP %s for key '%s'", exc.code, page_key)
+        return f"[Error: HTTP {exc.code} when fetching {page_key}]"
     except urllib.error.URLError as exc:
-        logger.warning("fetch_page URLError for %s: %s", url, exc.reason)
-        return f"[Error: could not reach {url} — {exc.reason}]"
+        logger.warning("fetch_page URLError for key '%s': %s", page_key, exc.reason)
+        return f"[Error: could not reach CPHOS API — {exc.reason}]"
     except Exception as exc:
-        logger.warning("fetch_page unexpected error for %s: %s", url, exc)
+        logger.warning("fetch_page error for key '%s': %s", page_key, exc)
         return f"[Error: {exc}]"
-
-    parser = _TextExtractor()
-    parser.feed(html)
-    text = parser.get_text()
 
     if len(text) > max_chars:
         text = text[:max_chars] + "\n…[content truncated]"
 
-    logger.info("fetch_page: fetched %d chars from %s", len(text), url)
-    return text or "[Error: page has no extractable text content]"
+    logger.info("fetch_page[%s]: fetched %d chars via WP REST API", page_key, len(text))
+    return text or "[Error: no content returned]"
