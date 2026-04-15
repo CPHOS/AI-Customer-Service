@@ -41,21 +41,35 @@ You can help users with questions about:
 4. Do NOT fabricate specific facts (account data, exam results, etc.) that are not \
    present in the context.
 5. Be concise and friendly. Respond in the same language as the user's question.
-
-## Web fetch tool
-You have access to a `fetch_page` tool that retrieves content from specific
-pre-approved CPHOS official web pages.  The available pages are:
-  - notification  — 联考通知
-  - organization  — 关于我们
-  - resource      — 资料下载
-  - events        — 往期活动
-Use the tool **only** when the knowledge-base context provided below is
-clearly insufficient — for example, when the user asks about the most
-recent exam schedule, an upcoming competition, or a recent announcement.
-Do NOT call the tool for general platform-usage questions that the context
-already covers.
 """
 
+
+# ── Web-fetch dedicated prompt (used only for category H) ────────────────────
+
+_WEB_SYSTEM_PROMPT = """\
+You are an AI customer service assistant for CPHOS (Chinese Physics Olympiad S).
+
+The user is asking a time-sensitive question whose answer must come from the
+CPHOS official website.  You MUST call the `fetch_page` tool to retrieve the
+relevant page before answering.
+
+Available pages you can fetch:
+  - notification  — 联考通知 (exam/competition announcements)
+  - organization  — 关于我们 (about CPHOS)
+  - resource      — 资料下载 (downloadable materials)
+  - events        — 往期活动 (past events and activities)
+
+Strategy:
+1. Decide which page(s) are most likely to contain the answer.
+2. Call `fetch_page` with the appropriate page_key.
+3. Read the returned content carefully.
+4. If the first page does not contain the answer, try another relevant page.
+5. Compose a clear, concise answer based on the fetched content.
+6. Respond in the same language as the user's question.
+
+Do NOT fabricate any dates, names, or specifics. Only use information from
+the fetched page content.
+"""
 
 # ── Tool definition (OpenAI function-calling spec) ───────────────────────────
 
@@ -135,6 +149,29 @@ class ExecutorAgent(BaseAgent):
                     f"Question: {question}"
                     f"{failure_note}\n\n"
                     "Answer:"
+                ),
+            },
+        ]
+        return self.ask_llm(messages, temperature=0.7)
+
+    def execute_with_web(
+        self,
+        question: str,
+    ) -> str:
+        """Answer a time-sensitive question by fetching CPHOS web pages.
+
+        Unlike :meth:`execute`, this method does NOT receive RAG context.
+        Instead it provides the LLM with the ``fetch_page`` tool so it can
+        pull live data from the CPHOS website.
+        """
+        messages = [
+            {"role": "system", "content": _WEB_SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": (
+                    f"Question: {question}\n\n"
+                    "Use the fetch_page tool to find the answer on the CPHOS "
+                    "official website, then reply to the user."
                 ),
             },
         ]

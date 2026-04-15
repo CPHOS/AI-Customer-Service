@@ -234,6 +234,25 @@ class Pipeline:
             _record(_OUT_OF_SCOPE_REPLY, category)
             return
 
+        # ── Category H: time-sensitive → web fetch, skip RAG ─────────────────
+        if category == "H":
+            yield ("status", {"step": "fetching_web", "message": "正在查询CPHOS官网…"})
+            logger.info("Category H (time-sensitive). Using web fetch path.")
+            raw_answer = self.executor.execute_with_web(question)
+            trace["executor_web"] = raw_answer
+            dbg("Executor (web fetch)", raw_answer)
+            self._check_timeout(_t0, "execute_web")
+
+            yield ("status", {"step": "polishing", "message": "正在优化回答…"})
+            full_parts: list[str] = []
+            for chunk in self.verifier.summarize_stream(question, raw_answer):
+                cleaned = fmt(chunk)
+                if cleaned:
+                    full_parts.append(cleaned)
+                    yield ("token", {"text": cleaned})
+            _record("".join(full_parts), category)
+            return
+
         section_hint = self.classifier.section_hint(category)
         logger.info("Classified as %r → section_hint=%r", category, section_hint)
 
@@ -376,6 +395,17 @@ class Pipeline:
         if not self.classifier.is_in_scope(category):
             logger.info("Question classified out-of-scope (G). Declining.")
             return _done(_OUT_OF_SCOPE_REPLY, category)
+
+        # ── Category H: time-sensitive → web fetch, skip RAG ─────────────────
+        if category == "H":
+            logger.info("Category H (time-sensitive). Using web fetch path.")
+            raw_answer = self.executor.execute_with_web(question)
+            trace["executor_web"] = raw_answer
+            dbg("Executor (web fetch)", raw_answer)
+            self._check_timeout(_t0, "execute_web")
+            final = self.verifier.summarize(question, raw_answer)
+            trace["verifier_summarized"] = final
+            return _done(fmt(final), category)
 
         section_hint = self.classifier.section_hint(category)
         logger.info("Classified as %r → section_hint=%r", category, section_hint)
