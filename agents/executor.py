@@ -10,6 +10,7 @@ Orchestrated directly in code; no agent framework is used.
 from __future__ import annotations
 
 from agents.base import BaseAgent
+from utils.web_fetch import fetch_page as _fetch_page
 
 _SYSTEM_PROMPT = """\
 You are an AI customer service assistant for CPHOS (Chinese Physics Olympiad S).
@@ -40,7 +41,55 @@ You can help users with questions about:
 4. Do NOT fabricate specific facts (account data, exam results, etc.) that are not \
    present in the context.
 5. Be concise and friendly. Respond in the same language as the user's question.
+
+## Web fetch tool
+You have access to a `fetch_page` tool that retrieves content from CPHOS
+official web pages (cphos.cn domain only).  Use it **only** when the
+knowledge-base context provided below is clearly insufficient to answer the
+question — for example, when the user asks about the most recent exam
+schedule, an upcoming competition date, or a recent official announcement
+that would not appear in a static knowledge base.
+Do NOT call the tool for general platform-usage questions that the context
+already covers.  Suggested entry point: https://cphos.cn/
 """
+
+
+# ── Tool definition (OpenAI function-calling spec) ───────────────────────────
+
+_FETCH_PAGE_TOOL: dict = {
+    "type": "function",
+    "function": {
+        "name": "fetch_page",
+        "description": (
+            "Fetch the plain-text content of a CPHOS official web page. "
+            "Only call this when the provided knowledge-base context is "
+            "insufficient to answer the question."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": (
+                        "Full URL of a page under cphos.cn to fetch, "
+                        "e.g. https://www.cphos.cn/"
+                    ),
+                },
+            },
+            "required": ["url"],
+        },
+    },
+}
+
+_TOOLS = [_FETCH_PAGE_TOOL]
+
+# ── Tool executor (maps tool name → local function) ──────────────────────
+
+def _run_fetch_page(args: dict) -> str:
+    url = args.get("url", "")
+    return _fetch_page(url)
+
+_TOOL_EXECUTOR = {"fetch_page": _run_fetch_page}
 
 
 class ExecutorAgent(BaseAgent):
@@ -83,4 +132,9 @@ class ExecutorAgent(BaseAgent):
                 ),
             },
         ]
-        return self.ask_llm(messages, temperature=0.7)
+        return self.ask_llm_with_tools(
+            messages,
+            tools=_TOOLS,
+            tool_executor=_TOOL_EXECUTOR,
+            temperature=0.7,
+        )

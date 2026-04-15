@@ -5,8 +5,10 @@ All LLM calls route through this class exclusively via the official
 openai Python library. No third-party routing or agent frameworks are used.
 """
 from __future__ import annotations
+import json
 import re
 import time
+from collections.abc import Callable
 from typing import Generator
 
 import openai
@@ -144,6 +146,124 @@ class BaseAgent:
             f"LLM stream failed after {self._max_attempts} attempts. "
             f"Last error: {last_exc}"
         )
+
+    def ask_llm_with_tools(
+        self,
+        messages: list[dict],
+        tools: list[dict],
+        tool_executor: dict[str, Callable[[dict], str]],
+        temperature: float = 0.7,
+        max_tokens: int = 2048,
+        max_tool_rounds: int = 3,
+    ) -> str:
+        """Send a chat-completion with tools and drive the tool-call loop.
+
+        Each round sends the current message list to the LLM.  If the model
+        returns a tool call, the tool is executed locally and its result is
+        appended as a ``tool`` message before the next round.  This repeats
+        until the model produces a plain-text reply or *max_tool_rounds* is
+        exhausted, at which point tools are dropped so the model is forced to
+        answer with the information it has.
+
+        Args:
+            messages:       Initial message list (system + user, etc.).
+            tools:          List of OpenAI tool-spec dicts.
+            tool_executor:  Map of tool name → callable that receives the
+                            parsed argument dict and returns a result string.
+            max_tool_rounds: Max number of tool-call iterations before
+                             the tools are removed and a final answer
+                             is forced.
+        """
+        current_messages = list(messages)
+
+        for round_idx in range(max_tool_rounds + 1):
+            # On the forced final round, stop offering tools so the model
+            # must produce a plain-text answer with what it already has.
+            active_tools: list[dict] | None = (
+                tools if round_idx < max_tool_rounds else None
+            )
+
+            # ── API call with retry ───────────────────────────────────────────
+            last_exc: Exception | None = None
+            response = None
+            for attempt in range(self._max_attempts):
+                try:
+                    kwargs: dict = dict(
+                        model=self.model,
+                        messages=current_messages,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                    )
+                    if active_tools:
+                        kwargs["tools"] = active_tools
+                    response = self._client.chat.completions.create(**kwargs)
+                    break
+                except openai.RateLimitError as exc:
+                    last_exc = exc
+                    logger.warning(
+                        "%s tool-call rate-limited (attempt %d/%d). Sleeping %.0fs…",
+                        self.__class__.__name__, attempt + 1, self._max_attempts, self._retry_sleep,
+                    )
+                    time.sleep(self._retry_sleep)
+                except openai.APIStatusError as exc:
+                    last_exc = exc
+                    logger.warning(
+                        "%s tool-call API error %s (attempt %d/%d): %s",
+                        self.__class__.__name__, exc.status_code, attempt + 1, self._max_attempts, exc.message,
+                    )
+                    time.sleep(self._retry_sleep)
+                except Exception as exc:
+                    last_exc = exc
+                    logger.warning(
+                        "%s tool-call unexpected error (attempt %d/%d): %s",
+                        self.__class__.__name__, attempt + 1, self._max_attempts, exc,
+                    )
+                    time.sleep(self._retry_sleep)
+            else:
+                raise RuntimeError(
+                    f"LLM call failed after {self._max_attempts} attempts. "
+                    f"Last error: {last_exc}"
+                )
+
+            choice = response.choices[0]
+
+            if choice.finish_reason == "tool_calls" and choice.message.tool_calls:
+                # Append the assistant's tool-call message verbatim
+                current_messages.append(
+                    choice.message.model_dump(exclude_none=True)
+                )
+
+                for tool_call in choice.message.tool_calls:
+                    fn_name = tool_call.function.name
+                    try:
+                        fn_args = json.loads(tool_call.function.arguments)
+                    except json.JSONDecodeError:
+                        fn_args = {}
+
+                    if fn_name in tool_executor:
+                        try:
+                            result = tool_executor[fn_name](fn_args)
+                        except ValueError as exc:
+                            result = f"[Tool error: {exc}]"
+                        except Exception as exc:
+                            logger.warning("Tool '%s' raised: %s", fn_name, exc)
+                            result = f"[Tool error: {exc}]"
+                    else:
+                        result = f"[Error: unknown tool '{fn_name}']"
+
+                    current_messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": result,
+                    })
+            else:
+                # Normal text reply — done
+                return self._extract_content(response)
+
+        # Should not be reachable; satisfy type-checker
+        if response is not None:
+            return self._extract_content(response)  # type: ignore[return-value]
+        raise RuntimeError("ask_llm_with_tools: no response obtained")
 
     @staticmethod
     def _filter_think_stream(stream) -> Generator[str, None, None]:

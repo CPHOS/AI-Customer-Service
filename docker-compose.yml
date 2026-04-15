@@ -23,9 +23,6 @@ services:
     env_file:
       - .env
     environment:
-      SESSION_BACKEND: redis
-      REDIS_URL: redis://redis:6379/0
-      SESSION_COOKIE_PATH: /cphos-ai/
       RELOAD: "false"
       HOST: 0.0.0.0
       PORT: "8000"

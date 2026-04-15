@@ -38,7 +38,6 @@ Environment variables (and their defaults):
 """
 from __future__ import annotations
 
-import secrets as _secrets
 from pathlib import Path
 
 from pydantic import model_validator
@@ -94,14 +93,6 @@ class Settings(BaseSettings):
     session_cookie_path: str = "/"
     session_accept_body_id: bool = True
     session_return_body_id: bool = True
-    session_secret: str = Field(
-        default_factory=lambda: _secrets.token_hex(32),
-        description=(
-            "HMAC secret for signing session IDs.  "
-            "Auto-generated per process when unset; set SESSION_SECRET in the "
-            "environment for stable IDs across server restarts."
-        ),
-    )
 
     # ── Helpers ───────────────────────────────────────────────────────────────
     def abs_path(self, p: str) -> str:

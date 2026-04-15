@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -84,18 +85,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # ── Shared state (available to all routes via request.app.state) ──────────
     app.state.settings      = settings
     app.state.pipeline      = None          # replaced by lifespan
+    session_secret = secrets.token_hex(32)
     app.state.session_store = create_session_store(
         backend     = settings.session_backend,
         ttl_seconds = settings.session_ttl,
         max_history = settings.session_max_history,
         redis_url   = settings.redis_url,
-        secret      = settings.session_secret,
+        secret      = session_secret,
     )
-    if not os.environ.get("SESSION_SECRET"):
-        _logger.warning(
-            "SESSION_SECRET not set — auto-generated for this process.  "
-            "Set it in the environment for stable session IDs across restarts.",
-        )
+    _logger.info("SESSION_SECRET auto-generated for this process.")
     app.state.limiter = limiter             # required by SlowAPIMiddleware
 
     # ── Middleware (registered in reverse order — last added runs first) ───────
