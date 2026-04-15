@@ -76,7 +76,7 @@ def _api_get(url: str) -> list | dict:
     req = urllib.request.Request(
         url,
         headers={
-            "User-Agent": "CPHOS-AI-Chatbot/1.0",
+            "User-Agent": "CPHOS-AI-Customer-Service/1.0",
             "Accept": "application/json",
         },
     )
@@ -85,8 +85,13 @@ def _api_get(url: str) -> list | dict:
 
 
 def _fetch_posts(category_id: int | None = None, per_page: int = _MAX_POSTS) -> str:
-    """Fetch recent posts, optionally filtered by category, and format as text."""
-    params = f"per_page={per_page}&_fields=title,date,link,excerpt"
+    """Fetch recent posts, optionally filtered by category, and format as text.
+
+    The first (most recent) post includes full content so that detailed info
+    like exact exam dates can be extracted. Remaining posts show excerpts only.
+    """
+    # First: fetch list with excerpts
+    params = f"per_page={per_page}&_fields=id,title,date,link,excerpt"
     if category_id is not None:
         params += f"&categories={category_id}"
     url = f"{_WP_API_BASE}/posts?{params}"
@@ -95,21 +100,39 @@ def _fetch_posts(category_id: int | None = None, per_page: int = _MAX_POSTS) -> 
     if not data:
         return "(该分类下暂无文章)"
 
+    # Fetch full content for the first (most recent) post
+    first_post_id = data[0].get("id")
+    first_content = ""
+    if first_post_id:
+        try:
+            detail = _api_get(
+                f"{_WP_API_BASE}/posts/{first_post_id}?_fields=content"
+            )
+            raw_html = detail.get("content", {}).get("rendered", "")
+            first_content = _strip_html(raw_html)
+            first_content = re.sub(r"\s{3,}", "\n", first_content).strip()
+        except Exception:
+            pass  # fall back to excerpt
+
     lines: list[str] = []
-    for post in data:
+    for idx, post in enumerate(data):
         title = _strip_html(post.get("title", {}).get("rendered", ""))
         date  = post.get("date", "")[:10]   # YYYY-MM-DD
         link  = post.get("link", "")
-        excerpt_html = post.get("excerpt", {}).get("rendered", "")
-        excerpt = _strip_html(excerpt_html)
-        # Clean up WP's [...] and &nbsp;
-        excerpt = re.sub(r"\s*\[&hellip;\]", "…", excerpt)
-        excerpt = excerpt.replace("\xa0", " ").strip()
 
         lines.append(f"📌 {title}")
         lines.append(f"   日期: {date}")
-        if excerpt:
-            lines.append(f"   摘要: {excerpt}")
+
+        if idx == 0 and first_content:
+            lines.append(f"   全文: {first_content}")
+        else:
+            excerpt_html = post.get("excerpt", {}).get("rendered", "")
+            excerpt = _strip_html(excerpt_html)
+            excerpt = re.sub(r"\s*\[&hellip;\]", "…", excerpt)
+            excerpt = excerpt.replace("\xa0", " ").strip()
+            if excerpt:
+                lines.append(f"   摘要: {excerpt}")
+
         if link:
             lines.append(f"   链接: {link}")
         lines.append("")
