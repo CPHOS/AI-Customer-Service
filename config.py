@@ -53,10 +53,3 @@ CRITIC_TIMEOUT:   float = float(os.environ.get("CRITIC_TIMEOUT", "30"))
 RETRIEVE_TIMEOUT: float = float(os.environ.get("RETRIEVE_TIMEOUT", "30"))
 # Overall pipeline timeout — hard ceiling on a single answer() call.
 PIPELINE_TIMEOUT: float = float(os.environ.get("PIPELINE_TIMEOUT", "120"))
-
-# ── CPHOS MySQL database (db_api) ─────────────────────────────────────────────
-CPHOS_DB_HOST:     str = os.environ.get("CPHOS_DB_HOST", "")
-CPHOS_DB_PORT:     int = int(os.environ.get("CPHOS_DB_PORT", "3306"))
-CPHOS_DB_USER:     str = os.environ.get("CPHOS_DB_USER", "")
-CPHOS_DB_NAME:     str = os.environ.get("CPHOS_DB_NAME", "")
-CPHOS_DB_PASSWORD: str = os.environ.get("CPHOS_DB_PASSWORD", "")

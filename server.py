@@ -15,7 +15,7 @@ python server.py
 Key environment variables
 --------------------------
 LOAD_INDEX      cphos.npz            Pre-built index file (skips re-embedding)
-REFS_DIR        references/          YAML knowledge-base directory
+REFS_DIR        references/docs      YAML knowledge-base directory
 RATE_LIMIT      30/minute            Per-IP request limit for POST /chat
 CORS_ORIGINS    *                    Comma-separated allowed origins
 SESSION_TTL     1800                 Session idle-expiry in seconds

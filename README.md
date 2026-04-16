@@ -72,11 +72,11 @@ uv sync
 ### 3. 构建知识库索引
 
 ```bash
-# 从 references/ 目录构建并保存索引
-python main.py --refs-dir references/ --save-index cphos.npz
+# 从 references/docs 目录构建并保存索引
+python main.py --refs-dir references/docs --save-index cphos.npz
 
 # 使用 uv
-uv run python main.py --refs-dir references/ --save-index cphos.npz
+uv run python main.py --refs-dir references/docs --save-index cphos.npz
 ```
 
 ### 4. 启动交互对话
@@ -87,7 +87,7 @@ python main.py --load-index cphos.npz
 
 uv run python main.py --load-index cphos.npz
 
-# 启动时检查 references/ 是否有更新，自动重建索引
+# 启动时检查 references/docs 是否有更新，自动重建索引
 python main.py --load-index cphos.npz --check-refs
 
 uv run python main.py --load-index cphos.npz --check-refs
@@ -122,7 +122,7 @@ mkdir ~/AI-CS && cd ~/AI-CS
 
 # 准备配置
 cp .env.example .env        # 编辑 .env 填入 API Key 等
-# 将 references/ 和 cphos.npz 上传到此目录
+# 将知识库 YAML 放到 references/docs，并将 cphos.npz 上传到此目录
 
 # 启动（含 Redis）
 docker compose pull && docker compose up -d

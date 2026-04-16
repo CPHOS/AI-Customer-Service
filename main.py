@@ -9,14 +9,14 @@ Usage:
     python main.py --docs path/to/guide.txt path/to/faq.pdf
 
     # Load all YAML files from a references directory (with section tagging)
-    python main.py --refs-dir references/
+    python main.py --refs-dir references/docs
 
     # Start with pre-built index (skips re-embedding)
     python main.py --load-index index.npz
 
     # Index documents and save the index for later reuse
     python main.py --docs guide.txt --save-index index.npz
-    python main.py --refs-dir references/ --save-index index.npz
+    python main.py --refs-dir references/docs --save-index index.npz
 """
 from __future__ import annotations
 
@@ -235,7 +235,7 @@ def parse_args(args=None):
         "-r", "--refs-dir",
         type=str,
         metavar="DIR",
-        default="references/",
+        default="references/docs",
         help=(
             "Directory containing YAML knowledge-base files. "
             "Each file is loaded with its stem as the section tag, enabling "

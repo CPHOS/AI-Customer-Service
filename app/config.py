@@ -6,7 +6,7 @@ file at the project root.  pydantic-settings validates types at startup so
 misconfigured deployments fail fast with clear error messages.
 
 Environment variables (and their defaults):
-    REFS_DIR            references/          Path to YAML reference files
+    REFS_DIR            references/docs      Path to YAML reference files
     DOC_PATHS           ""                   Space-separated extra doc paths
     LOAD_INDEX          cphos.npz            Pre-built .npz index file
     SAVE_INDEX          (none)               Save built index to this path
@@ -55,7 +55,7 @@ class Settings(BaseSettings):
     )
 
     # ── Pipeline ───────────────────────────────────────────────────────────────
-    refs_dir:      str        = "references/"
+    refs_dir:      str        = "references/docs"
     doc_paths:     str        = ""           # space-separated list
     load_index:    str        = "cphos.npz"
     save_index:    str | None = None
